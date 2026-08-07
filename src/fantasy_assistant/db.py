@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DB_PATH = REPO_ROOT / "data" / "fantasy_assistant.db"
+# DATABASE_PATH lets a deployment (e.g. Railway, with a mounted volume) point
+# the DB at persistent storage instead of the repo-relative local default.
+DEFAULT_DB_PATH = Path(os.environ["DATABASE_PATH"]) if os.environ.get("DATABASE_PATH") else REPO_ROOT / "data" / "fantasy_assistant.db"
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 
 

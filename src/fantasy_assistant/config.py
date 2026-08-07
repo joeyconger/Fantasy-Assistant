@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -54,13 +55,17 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH, secrets_path: Path = DEFAULT_S
         if secrets_path.exists():
             secrets = yaml.safe_load(secrets_path.read_text()) or {}
         espn_secrets = secrets.get("espn", {})
+        # ESPN_SWID/ESPN_S2 env vars (set on a host like Railway, which has no
+        # local secrets.yaml) take priority over the gitignored local file.
+        swid = os.environ.get("ESPN_SWID") or espn_secrets.get("swid")
+        espn_s2 = os.environ.get("ESPN_S2") or espn_secrets.get("espn_s2")
         espn_league = EspnLeagueConfig(
             league_id=str(espn_raw["league_id"]),
             season=espn_raw.get("season"),
             private=espn_raw.get("private"),
             format=espn_raw.get("format"),
-            swid=espn_secrets.get("swid"),
-            espn_s2=espn_secrets.get("espn_s2"),
+            swid=swid,
+            espn_s2=espn_s2,
         )
 
     return AppConfig(sleeper_leagues=sleeper_leagues, espn_league=espn_league)
