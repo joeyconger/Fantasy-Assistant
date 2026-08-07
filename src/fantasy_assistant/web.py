@@ -279,16 +279,23 @@ def buy_sell_page(_user: str = Depends(require_auth), league_id: str | None = Qu
 
 
 @app.get("/devy", response_class=HTMLResponse)
-def devy_page(_user: str = Depends(require_auth)):
+def devy_page(_user: str = Depends(require_auth), qb_mode: str = Query(default="1qb")):
+    if qb_mode not in ("1qb", "superflex"):
+        qb_mode = "1qb"
     conn = db_module.get_connection()
     db_module.init_db(conn)
     try:
-        prospects = devy_module.list_prospects(conn)
+        prospects = devy_module.list_prospects(conn, qb_mode=qb_mode)
     finally:
         conn.close()
 
+    toggle = "".join(
+        f'<a href="/devy?qb_mode={m}" style="margin-right:1rem;{"font-weight:bold" if m == qb_mode else ""}">{m.upper()}</a>'
+        for m in ("1qb", "superflex")
+    )
+
     if not prospects:
-        body = "<p class='empty'>Watchlist is empty. Add prospects with the CLI: fantasy-assistant devy-add.</p>"
+        body = f"{toggle}<p class='empty'>Watchlist is empty. Add prospects with the CLI: fantasy-assistant devy-add.</p>"
     else:
         rows = "".join(
             f"<tr><td>{html.escape(p['full_name'])}</td><td>{html.escape(p['position'] or '')}</td>"
@@ -297,8 +304,8 @@ def devy_page(_user: str = Depends(require_auth)):
             f"<td>{p['ktc_rank'] if p['ktc_rank'] is not None else '-'}</td></tr>"
             for p in prospects
         )
-        body = f"""<table><thead><tr><th>Name</th><th>Pos</th><th>College</th><th>Notes</th>
-        <th>KTC Devy Value</th><th>KTC Devy Rank</th></tr></thead><tbody>{rows}</tbody></table>
+        body = f"""{toggle}<table><thead><tr><th>Name</th><th>Pos</th><th>College</th><th>Notes</th>
+        <th>KTC Devy Value ({qb_mode.upper()})</th><th>KTC Devy Rank</th></tr></thead><tbody>{rows}</tbody></table>
         <p class='empty'>Manage the watchlist via CLI: fantasy-assistant devy-add / devy-remove.</p>"""
 
     return _page("Devy Watchlist", f"<h2>Devy Watchlist</h2>{body}")

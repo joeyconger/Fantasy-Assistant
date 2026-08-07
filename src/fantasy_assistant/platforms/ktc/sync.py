@@ -17,39 +17,42 @@ from .client import KTCClient
 CACHE_TTL = timedelta(hours=12)
 
 
-def sync_values(conn: sqlite3.Connection, client: KTCClient, format_: str, force: bool = False) -> int:
+def sync_values(conn: sqlite3.Connection, client: KTCClient, format_: str, qb_mode: str = "1qb", force: bool = False) -> int:
     row = conn.execute(
-        "SELECT fetched_at FROM market_values_cache_meta WHERE source = 'ktc' AND format = ?", (format_,)
+        "SELECT fetched_at FROM market_values_cache_meta WHERE source = 'ktc' AND format = ? AND qb_mode = ?",
+        (format_, qb_mode),
     ).fetchone()
     if row and not force:
         fetched_at = datetime.fromisoformat(row["fetched_at"])
         if datetime.now(timezone.utc) - fetched_at < CACHE_TTL:
             return 0
 
-    players = client.get_values(format_)
+    players = client.get_values(format_, qb_mode)
     now = datetime.now(timezone.utc).isoformat()
 
     # Roll current values into "prior" before overwriting, so a delta is computable.
-    conn.execute("DELETE FROM market_values_prior WHERE source = 'ktc' AND format = ?", (format_,))
+    conn.execute(
+        "DELETE FROM market_values_prior WHERE source = 'ktc' AND format = ? AND qb_mode = ?", (format_, qb_mode)
+    )
     conn.execute(
         """
-        INSERT INTO market_values_prior (source, format, normalized_name, position, value, fetched_at)
-        SELECT source, format, normalized_name, position, value, fetched_at
-        FROM market_values WHERE source = 'ktc' AND format = ?
+        INSERT INTO market_values_prior (source, format, qb_mode, normalized_name, position, value, fetched_at)
+        SELECT source, format, qb_mode, normalized_name, position, value, fetched_at
+        FROM market_values WHERE source = 'ktc' AND format = ? AND qb_mode = ?
         """,
-        (format_,),
+        (format_, qb_mode),
     )
 
-    conn.execute("DELETE FROM market_values WHERE source = 'ktc' AND format = ?", (format_,))
+    conn.execute("DELETE FROM market_values WHERE source = 'ktc' AND format = ? AND qb_mode = ?", (format_, qb_mode))
     count = 0
     for p in players:
         if not p.get("full_name"):
             continue
         conn.execute(
             """
-            INSERT INTO market_values (source, format, normalized_name, full_name, position, team, value, rank, fetched_at)
-            VALUES ('ktc', ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(source, format, normalized_name, position) DO UPDATE SET
+            INSERT INTO market_values (source, format, qb_mode, normalized_name, full_name, position, team, value, rank, fetched_at)
+            VALUES ('ktc', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source, format, qb_mode, normalized_name, position) DO UPDATE SET
                 full_name=excluded.full_name,
                 team=excluded.team,
                 value=excluded.value,
@@ -58,6 +61,7 @@ def sync_values(conn: sqlite3.Connection, client: KTCClient, format_: str, force
             """,
             (
                 format_,
+                qb_mode,
                 normalize_name(p["full_name"]),
                 p["full_name"],
                 p.get("position") or "",
@@ -71,10 +75,10 @@ def sync_values(conn: sqlite3.Connection, client: KTCClient, format_: str, force
 
     conn.execute(
         """
-        INSERT INTO market_values_cache_meta (source, format, fetched_at) VALUES ('ktc', ?, ?)
-        ON CONFLICT(source, format) DO UPDATE SET fetched_at=excluded.fetched_at
+        INSERT INTO market_values_cache_meta (source, format, qb_mode, fetched_at) VALUES ('ktc', ?, ?, ?)
+        ON CONFLICT(source, format, qb_mode) DO UPDATE SET fetched_at=excluded.fetched_at
         """,
-        (format_, now),
+        (format_, qb_mode, now),
     )
     conn.commit()
     return count

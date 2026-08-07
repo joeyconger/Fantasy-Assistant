@@ -20,24 +20,25 @@ import sqlite3
 
 from ..platforms.matching import normalize_name
 from .performance_trend import compute_trends
+from .roster_format import detect_qb_mode
 
 PERF_TREND_THRESHOLD = 2.0  # points/game swing to count as a meaningful trend
 SENTIMENT_THRESHOLD = 3  # net mention score to count as notably positive/negative
 
 
-def _market_value_delta_map(conn: sqlite3.Connection, format_: str) -> dict[tuple[str, str], int | None]:
+def _market_value_delta_map(conn: sqlite3.Connection, format_: str, qb_mode: str) -> dict[tuple[str, str], int | None]:
     current = {
         (row["normalized_name"], row["position"] or ""): row["value"]
         for row in conn.execute(
-            "SELECT normalized_name, position, value FROM market_values WHERE source = 'ktc' AND format = ?",
-            (format_,),
+            "SELECT normalized_name, position, value FROM market_values WHERE source = 'ktc' AND format = ? AND qb_mode = ?",
+            (format_, qb_mode),
         ).fetchall()
     }
     prior = {
         (row["normalized_name"], row["position"] or ""): row["value"]
         for row in conn.execute(
-            "SELECT normalized_name, position, value FROM market_values_prior WHERE source = 'ktc' AND format = ?",
-            (format_,),
+            "SELECT normalized_name, position, value FROM market_values_prior WHERE source = 'ktc' AND format = ? AND qb_mode = ?",
+            (format_, qb_mode),
         ).fetchall()
     }
     deltas = {}
@@ -80,8 +81,11 @@ def find_buy_low_sell_high(conn: sqlite3.Connection, league_id: str, league_form
     trends = compute_trends(conn, league_id)
     sentiment = _sentiment_map(conn)
 
+    league_row = conn.execute("SELECT roster_positions FROM leagues WHERE league_id = ?", (league_id,)).fetchone()
+    qb_mode = detect_qb_mode(league_row["roster_positions"] if league_row else None)
+
     market_format = league_format if league_format in ("dynasty", "devy") else None
-    value_deltas = _market_value_delta_map(conn, market_format) if market_format else {}
+    value_deltas = _market_value_delta_map(conn, market_format, qb_mode) if market_format else {}
     rank_deltas = {} if market_format else _expert_rank_delta_map(conn)
 
     rows = conn.execute(
@@ -132,6 +136,7 @@ def find_buy_low_sell_high(conn: sqlite3.Connection, league_id: str, league_form
                 "market_delta": market_delta,
                 "sentiment": net_sentiment,
                 "flags": flags,
+                "qb_mode": qb_mode if market_format else None,
             }
         )
 

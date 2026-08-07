@@ -18,6 +18,7 @@ deployed (e.g. on Railway) as a small shared web dashboard.
 | Weekly performance trend (Sleeper matchups) | ⚠️ Built + tested; no real games played yet this season to sync (it's August) |
 | Waiver/trade target identifier | ⚠️ Built + tested; same real-data caveat as above |
 | KeepTradeCut (KTC) scraper | ❌ **UNVERIFIED — genuinely uncertain.** This environment cannot reach keeptradecut.com at all. The parser is a best-effort guess at their page structure with 3 fallback strategies; each strategy is unit-tested against synthetic HTML matching what it expects, but none of that proves it matches the real site. **Run `fantasy-assistant sync-ktc` first and expect it might fail.** |
+| — 1QB vs Superflex split | ⚠️ Wired in, auto-detected from each league's roster settings (2+ QB slots or a Superflex/OP slot → superflex), tested — but the actual KTC query param used to fetch Superflex values (`?format=2`) is a guess, same unverified status as the rest of KTC. |
 | FantasyPros scraper | ❌ **Same caveat as KTC** — untested against the real site. |
 | Reddit sentiment | ❌ **Cannot be tested at all yet** — needs a Reddit API app (client ID/secret) that only you can create, and this sandbox can't reach reddit.com anyway. Code is standard PRAW usage, structurally sound, never actually run. |
 | X/Twitter | 🚫 **Skipped, deliberately.** See "Why X/Twitter was skipped" below. |
@@ -66,7 +67,7 @@ expected with real credentials. Only a live run answers that.
 fantasy-assistant sync-all          # Sleeper leagues + players + ESPN league + ESPN rankings
 fantasy-assistant sync-rankings     # just the rank/ADP data (Sleeper + ESPN)
 fantasy-assistant sync-weekly-points 1389373095143284736   # this week's + recent points (needs games played)
-fantasy-assistant sync-ktc --format dynasty                # or --format devy
+fantasy-assistant sync-ktc --format dynasty --qb-mode 1qb   # or --format devy, --qb-mode superflex
 fantasy-assistant sync-fantasypros
 fantasy-assistant sync-reddit       # needs REDDIT_CLIENT_ID/SECRET env vars first
 
@@ -74,14 +75,22 @@ fantasy-assistant standings 1389373095143284736
 fantasy-assistant draft-board                                    # Sleeper vs ESPN rank divergence
 fantasy-assistant waiver-targets 1389373095143284736              # available players trending up
 fantasy-assistant trade-targets 1389373095143284736               # rostered players trending up
-fantasy-assistant buy-sell 1389373095143284736                    # the composite engine
+fantasy-assistant buy-sell 1389373095143284736                    # the composite engine (auto-detects 1QB/Superflex)
 
 fantasy-assistant devy-add "Some College QB" --position QB --college "Ohio State" --notes "watch him"
-fantasy-assistant devy-list
+fantasy-assistant devy-list --qb-mode 1qb    # or --qb-mode superflex
 fantasy-assistant devy-remove 1
 ```
 
 Full command list: `fantasy-assistant --help`.
+
+**1QB vs Superflex**: `buy-sell` auto-detects which one your league actually
+is from its synced roster settings (2+ QB slots, or a Superflex/OP slot) —
+no flag needed. `sync-ktc` and `devy-list` need `--qb-mode` explicitly since
+they're not tied to one specific league. Run `sync-ktc` once for each mode
+you actually need (e.g. `1qb` for Weekend Warriors, `superflex` only if
+Dollars for Devys turns out to be superflex — check by running `buy-sell`
+on it and seeing which mode it reports).
 
 ## What to try first when you're back
 
@@ -92,10 +101,14 @@ Full command list: `fantasy-assistant --help`.
    real shape.
 2. **`fantasy-assistant draft-board`** — once #1 works, this should show
    players where Sleeper and ESPN disagree on rank.
-3. **`fantasy-assistant sync-ktc --format dynasty`** — the riskiest untested
-   piece. If it raises `KTCParseError`, that's expected-possible, not a
-   crisis — the error message itself explains what to send back (or you can
-   view-source the page and paste the relevant `<script>` tag).
+3. **`fantasy-assistant sync-ktc --format dynasty --qb-mode 1qb`** — the
+   riskiest untested piece, doubly so for the Superflex query param guess.
+   If it raises `KTCParseError`, that's expected-possible, not a crisis —
+   the error message itself explains what to send back (or you can
+   view-source the page and paste the relevant `<script>` tag). Once basic
+   1QB sync works, try `--qb-mode superflex` and check whether the values
+   actually differ from the 1QB run — if they come back identical, the
+   `?format=2` guess is wrong and just re-fetched the same page.
 4. **`fantasy-assistant sync-fantasypros`** — same idea, `FantasyProsParseError`
    if the page structure differs from what's assumed.
 5. **Reddit**: create a script app at https://www.reddit.com/prefs/apps

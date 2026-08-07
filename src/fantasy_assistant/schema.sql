@@ -90,9 +90,15 @@ CREATE TABLE IF NOT EXISTS player_weekly_points (
 -- position rather than a player_id, since KTC has no shared ID with
 -- Sleeper/ESPN — matched against them at query time the same way Sleeper
 -- and ESPN are matched to each other (see platforms/matching.py).
+--
+-- qb_mode ('1qb' | 'superflex') is part of the key because QB value swings
+-- dramatically between the two and KTC publishes separate rankings for
+-- each — comparing a Superflex roster against 1QB-priced values (or vice
+-- versa) would badly skew buy-low/sell-high. See analysis/roster_format.py.
 CREATE TABLE IF NOT EXISTS market_values (
     source TEXT NOT NULL,            -- 'ktc'
     format TEXT NOT NULL,            -- 'dynasty' | 'devy'
+    qb_mode TEXT NOT NULL DEFAULT '1qb',  -- '1qb' | 'superflex'
     normalized_name TEXT NOT NULL,
     full_name TEXT,
     position TEXT,
@@ -100,7 +106,7 @@ CREATE TABLE IF NOT EXISTS market_values (
     value INTEGER,
     rank INTEGER,
     fetched_at TEXT NOT NULL,
-    PRIMARY KEY (source, format, normalized_name, position)
+    PRIMARY KEY (source, format, qb_mode, normalized_name, position)
 );
 
 -- Value on a *previous* sync, kept so we can compute "value delta over
@@ -108,18 +114,20 @@ CREATE TABLE IF NOT EXISTS market_values (
 CREATE TABLE IF NOT EXISTS market_values_prior (
     source TEXT NOT NULL,
     format TEXT NOT NULL,
+    qb_mode TEXT NOT NULL DEFAULT '1qb',
     normalized_name TEXT NOT NULL,
     position TEXT NOT NULL,
     value INTEGER,
     fetched_at TEXT NOT NULL,
-    PRIMARY KEY (source, format, normalized_name, position)
+    PRIMARY KEY (source, format, qb_mode, normalized_name, position)
 );
 
 CREATE TABLE IF NOT EXISTS market_values_cache_meta (
     source TEXT NOT NULL,
     format TEXT NOT NULL,
+    qb_mode TEXT NOT NULL DEFAULT '1qb',
     fetched_at TEXT NOT NULL,
-    PRIMARY KEY (source, format)
+    PRIMARY KEY (source, format, qb_mode)
 );
 
 -- Expert consensus rankings from a source with no shared player ID (same

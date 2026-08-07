@@ -16,10 +16,12 @@ def conn():
     return c
 
 
-def _add_league(conn, league_id="L1", format_="redraft"):
+def _add_league(conn, league_id="L1", format_="redraft", roster_positions=None):
+    import json
+
     conn.execute(
-        "INSERT INTO leagues (league_id, platform, name, season, format, total_rosters) VALUES (?, 'sleeper', 'Test', '2026', ?, 1)",
-        (league_id, format_),
+        "INSERT INTO leagues (league_id, platform, name, season, format, total_rosters, roster_positions) VALUES (?, 'sleeper', 'Test', '2026', ?, 1, ?)",
+        (league_id, format_, json.dumps(roster_positions) if roster_positions else None),
     )
 
 
@@ -225,3 +227,42 @@ def test_no_flags_when_performance_and_market_agree(conn):
 
     results = find_buy_low_sell_high(conn, "L1", "dynasty")
     assert results == []
+
+
+def test_buy_low_sell_high_uses_superflex_values_for_superflex_league(conn):
+    from fantasy_assistant.analysis.buy_low_sell_high import find_buy_low_sell_high
+
+    _add_league(conn, format_="dynasty", roster_positions=["QB", "QB", "RB", "WR", "TE", "BN"])
+    _add_player(conn, "p1", "sleeper", "Trending QB", "QB")
+    conn.execute("INSERT INTO roster_players (league_id, roster_id, player_id) VALUES ('L1', '1', 'p1')")
+    for week, pts in [(1, 15.0), (2, 15.0), (3, 30.0), (4, 30.0)]:
+        conn.execute(
+            "INSERT INTO player_weekly_points (league_id, player_id, week, points, fetched_at) VALUES ('L1', 'p1', ?, ?, ?)",
+            (week, pts, NOW),
+        )
+    # 1QB value: rose a lot (would suppress a buy_low flag if wrongly used).
+    conn.execute(
+        "INSERT INTO market_values (source, format, qb_mode, normalized_name, full_name, position, value, fetched_at) VALUES ('ktc','dynasty','1qb','trending qb','Trending QB','QB',9000,?)",
+        (NOW,),
+    )
+    conn.execute(
+        "INSERT INTO market_values_prior (source, format, qb_mode, normalized_name, position, value, fetched_at) VALUES ('ktc','dynasty','1qb','trending qb','QB',3000,?)",
+        (NOW,),
+    )
+    # Superflex value: flat (should be what actually drives the flag, since this league is superflex).
+    conn.execute(
+        "INSERT INTO market_values (source, format, qb_mode, normalized_name, full_name, position, value, fetched_at) VALUES ('ktc','dynasty','superflex','trending qb','Trending QB','QB',9500,?)",
+        (NOW,),
+    )
+    conn.execute(
+        "INSERT INTO market_values_prior (source, format, qb_mode, normalized_name, position, value, fetched_at) VALUES ('ktc','dynasty','superflex','trending qb','QB',9500,?)",
+        (NOW,),
+    )
+    conn.commit()
+
+    results = find_buy_low_sell_high(conn, "L1", "dynasty")
+    assert len(results) == 1
+    assert results[0]["qb_mode"] == "superflex"
+    assert results[0]["market_delta"] == 0  # superflex delta, NOT the 1qb delta of +6000
+    flags = [f for f, _ in results[0]["flags"]]
+    assert "buy_low" in flags

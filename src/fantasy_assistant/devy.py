@@ -30,13 +30,19 @@ def remove_prospect(conn: sqlite3.Connection, prospect_id: int) -> bool:
     return cursor.rowcount > 0
 
 
-def list_prospects(conn: sqlite3.Connection) -> list[dict]:
+def list_prospects(conn: sqlite3.Connection, qb_mode: str = "1qb") -> list[dict]:
     """Watchlist entries, cross-referenced against cached KTC devy values by
-    normalized name when available (run sync-ktc --format devy first)."""
+    normalized name when available (run sync-ktc --format devy first).
+
+    qb_mode matters for QB prospects — a devy QB's value differs a lot
+    between 1QB and Superflex leagues, same as NFL QBs. Defaults to '1qb';
+    pass 'superflex' if that's the watchlist's actual context.
+    """
     devy_values = {
         (row["normalized_name"], row["position"] or ""): row
         for row in conn.execute(
-            "SELECT normalized_name, position, value, rank FROM market_values WHERE source = 'ktc' AND format = 'devy'"
+            "SELECT normalized_name, position, value, rank FROM market_values WHERE source = 'ktc' AND format = 'devy' AND qb_mode = ?",
+            (qb_mode,),
         ).fetchall()
     }
 

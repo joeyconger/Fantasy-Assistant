@@ -245,14 +245,15 @@ def trade_targets_cmd(league_id: str, limit: int):
 
 @cli.command("sync-ktc")
 @click.option("--format", "format_", type=click.Choice(["dynasty", "devy"]), default="dynasty")
+@click.option("--qb-mode", type=click.Choice(["1qb", "superflex"]), default="1qb", help="Also UNVERIFIED — see client.py.")
 @click.option("--force", is_flag=True)
-def sync_ktc_cmd(format_: str, force: bool):
+def sync_ktc_cmd(format_: str, qb_mode: str, force: bool):
     """Sync KeepTradeCut dynasty/devy trade values (UNVERIFIED — see platforms/ktc/client.py)."""
     conn = db_module.get_connection()
     db_module.init_db(conn)
     client = KTCClient()
     try:
-        count = ktc_sync_values(conn, client, format_, force=force)
+        count = ktc_sync_values(conn, client, format_, qb_mode=qb_mode, force=force)
     except KTCFetchError as exc:
         raise click.ClickException(f"Couldn't reach KTC: {exc}")
     except KTCParseError as exc:
@@ -260,7 +261,11 @@ def sync_ktc_cmd(format_: str, force: bool):
             f"{exc}\n\nThis was never tested against the live site — the parser needs a real look "
             "at the page structure. Paste this error back and it can be fixed."
         )
-    click.echo(f"Synced {count} {format_} values from KTC." if count else "KTC cache fresh (<12h) — skipped. Use --force.")
+    click.echo(
+        f"Synced {count} {format_}/{qb_mode} values from KTC."
+        if count
+        else "KTC cache fresh (<12h) — skipped. Use --force."
+    )
 
 
 @cli.command("sync-fantasypros")
@@ -322,6 +327,9 @@ def buy_sell_cmd(league_id: str, limit: int):
         )
         return
 
+    if results[0].get("qb_mode"):
+        click.echo(f"(KTC values: {results[0]['qb_mode']} — auto-detected from league roster settings)")
+
     for r in results:
         click.echo(f"\n{r['name']} ({r['position']}, {r['team']})")
         click.echo(f"  Recent avg: {r['recent_avg']}  Season avg: {r['season_avg']}  Trend: {r['perf_trend']:+}")
@@ -358,11 +366,12 @@ def devy_remove_cmd(prospect_id: int):
 
 
 @cli.command("devy-list")
-def devy_list_cmd():
+@click.option("--qb-mode", type=click.Choice(["1qb", "superflex"]), default="1qb", help="Which KTC devy values to show — QB value differs a lot between the two.")
+def devy_list_cmd(qb_mode: str):
     """List the devy watchlist, with KTC devy value if synced (sync-ktc --format devy)."""
     conn = db_module.get_connection()
     db_module.init_db(conn)
-    prospects = devy_module.list_prospects(conn)
+    prospects = devy_module.list_prospects(conn, qb_mode=qb_mode)
     if not prospects:
         click.echo("Watchlist is empty. Add one with devy-add.")
         return
