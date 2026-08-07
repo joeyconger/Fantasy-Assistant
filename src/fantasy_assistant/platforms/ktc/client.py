@@ -1,28 +1,23 @@
-"""Scrapes KeepTradeCut dynasty/devy trade values — they have no public API.
+"""Scrapes KeepTradeCut dynasty trade values — they have no public API.
 
-**UNVERIFIED**: this environment's egress policy blocks keeptradecut.com, so
-none of the parsing logic here has been tested against the real page. The
-strategies below are a best-effort guess based on common patterns for this
-kind of site (a JSON blob embedded in the page for client-side rendering,
-falling back to plain HTML table scraping). Run `fantasy-assistant sync-ktc`
-locally — if it raises KTCParseError, the real page structure differs from
-what's assumed here. Paste the error (it includes a snippet of what was
-found) or the page's view-source back and the parser can be fixed quickly.
+**VERIFIED against the live dynasty-rankings page** (2026-08). The page
+embeds a `var playersArray = [...]` JS array (matched by the
+`_parse_embedded_array` strategy below) where each record carries BOTH 1QB
+and Superflex values at once, nested under `oneQBValues` / `superflexValues`
+(each with its own `value`/`rank`/`positionalRank`/`adp`) — there is no
+separate URL or query param per format; that was an earlier wrong guess,
+now removed. One request covers both qb_modes.
 
-**1QB vs Superflex (also unverified)**: QB dynasty/devy value swings hugely
-between formats. Two different sites use two different mechanisms for this
-sort of toggle, and it's unknown which KTC uses without seeing the real
-page: (a) one dataset per page load with both values embedded per player
-(e.g. `value` + `superflexValue` fields on the same record), or (b) a
-separate page/query param per format. This client handles both: it always
-requests the format-specific URL (best-guess query param `?format=2` for
-Superflex — unverified), but also prefers dual-value fields on a record if
-present, since that would mean the "1QB" and "Superflex" pages actually
-return the same data either way.
+**devy-rankings page is NOT yet verified** — same parsing code is used
+(the two pages share KTC's site framework) but the devy page hasn't been
+checked directly. Run `fantasy-assistant sync-ktc --format devy` to confirm;
+if it raises KTCParseError, the real page structure differs from what's
+assumed here — paste the error back (it includes a length/snippet) and it
+can be fixed the same way the dynasty page was.
 
-Respectful-scraping choices: a real User-Agent identifying this tool, one
-request per (format, qb_mode) per sync call, and callers are expected to
-cache results (see sync.py's 12h TTL) rather than re-fetching on every run.
+Respectful-scraping choices: a real User-Agent identifying this tool, and
+callers are expected to cache results (see sync.py's 12h TTL) rather than
+re-fetching on every run.
 """
 
 from __future__ import annotations
@@ -50,23 +45,18 @@ class KTCParseError(RuntimeError):
     site's structure has likely changed from what's assumed here."""
 
 
-def _page_url(format_: str, qb_mode: str) -> str:
+def _page_url(format_: str) -> str:
     if format_ not in BASE_URLS:
         raise ValueError(f"Unknown KTC format '{format_}', expected one of {list(BASE_URLS)}")
-    url = BASE_URLS[format_]
-    if qb_mode == "superflex":
-        url += "?format=2"  # best-guess query param, UNVERIFIED
-    elif qb_mode != "1qb":
-        raise ValueError(f"Unknown qb_mode '{qb_mode}', expected '1qb' or 'superflex'")
-    return url
+    return BASE_URLS[format_]
 
 
 class KTCClient:
     def __init__(self, session: requests.Session | None = None):
         self._session = session or requests.Session()
 
-    def _fetch_html(self, format_: str, qb_mode: str) -> str:
-        url = _page_url(format_, qb_mode)
+    def _fetch_html(self, format_: str) -> str:
+        url = _page_url(format_)
         try:
             resp = self._session.get(url, headers={"User-Agent": USER_AGENT}, timeout=TIMEOUT_SECONDS)
         except requests.RequestException as exc:
@@ -77,12 +67,23 @@ class KTCClient:
 
     def get_values(self, format_: str, qb_mode: str = "1qb") -> list[dict]:
         """Returns [{full_name, position, team, value, rank}, ...] for the
-        given format ('dynasty' or 'devy') and qb_mode ('1qb' or 'superflex')."""
-        html = self._fetch_html(format_, qb_mode)
+        given format ('dynasty' or 'devy') and qb_mode ('1qb' or 'superflex').
+
+        One page load carries both qb_modes (see module docstring), so this
+        doesn't make a second request for a different qb_mode of the same
+        format — the same fetch is just re-normalized for whichever one is
+        asked for. Callers doing both 1qb and superflex syncs back-to-back
+        will still issue two HTTP requests today since caching is keyed by
+        (format, qb_mode) in sync.py, not by format alone — a reasonable
+        future optimization, not fixed now.
+        """
+        if qb_mode not in ("1qb", "superflex"):
+            raise ValueError(f"Unknown qb_mode '{qb_mode}', expected '1qb' or 'superflex'")
+        html = self._fetch_html(format_)
         raw = _parse_next_data(html) or _parse_embedded_array(html) or _parse_html_table(html)
         if raw is None:
             raise KTCParseError(
-                f"Could not find player data in the {format_}/{qb_mode} rankings page using any "
+                f"Could not find player data in the {format_} rankings page using any "
                 "known strategy (Next.js data blob, embedded JS array, HTML table). Page length "
                 f"was {len(html)} chars. The site's structure likely changed — needs a live look."
             )
@@ -152,7 +153,9 @@ def _find_player_list(data, depth: int = 0) -> list[dict] | None:
         return None
     if isinstance(data, list) and data and isinstance(data[0], dict):
         keys = {k.lower() for k in data[0].keys()}
-        if keys & {"playername", "full_name", "name"} and keys & {"value", "rank", "tier", "superflexvalue"}:
+        if keys & {"playername", "full_name", "name"} and keys & {
+            "value", "rank", "tier", "oneqbvalues", "superflexvalues"
+        }:
             return data
     if isinstance(data, dict):
         for value in data.values():
@@ -172,14 +175,22 @@ def _normalize_ktc_record(p: dict, qb_mode: str) -> dict | None:
     if not name:
         return None
 
-    # Prefer dual-value fields if the page carries both formats at once —
-    # would mean the qb_mode-specific URL doesn't even matter for this field.
-    if qb_mode == "superflex":
-        value = p.get("superflexValue") or p.get("sfValue") or p.get("value")
-        rank = p.get("superflexRank") or p.get("sfRank") or p.get("rank")
-    else:
-        value = p.get("value") or p.get("oneQBValue") or p.get("value1")
-        rank = p.get("rank") or p.get("oneQBRank") or p.get("Rank")
+    # Confirmed live structure: each record nests both formats under
+    # oneQBValues / superflexValues, each its own {value, rank, ...} dict.
+    values_key = "superflexValues" if qb_mode == "superflex" else "oneQBValues"
+    values = p.get(values_key) or {}
+    value = values.get("value")
+    rank = values.get("rank")
+
+    if value is None and rank is None:
+        # Fallback for a shape that doesn't nest this way (e.g. if the
+        # devy page or a future site change differs from dynasty's).
+        if qb_mode == "superflex":
+            value = p.get("superflexValue") or p.get("sfValue") or p.get("value")
+            rank = p.get("superflexRank") or p.get("sfRank") or p.get("rank")
+        else:
+            value = p.get("value") or p.get("oneQBValue")
+            rank = p.get("rank") or p.get("oneQBRank")
 
     return {
         "full_name": name,
