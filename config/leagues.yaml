@@ -12,11 +12,11 @@
 
 sleeper:
   - league_id: "1389373095143284736"
-    format: null   # fill in after first sync, or set to redraft/dynasty/devy
+    format: redraft   # BMFS
   - league_id: "1315737573154390016"
-    format: null
+    format: dynasty   # Weekend Warriors
   - league_id: "1313961246109761536"
-    format: null
+    format: devy      # Dollars for Devys
 
 espn:
   league_id: "509682142"
