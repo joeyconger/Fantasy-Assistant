@@ -17,20 +17,18 @@ deployed (e.g. on Railway) as a small shared web dashboard.
 | Draft board (rank inefficiency finder) | ⚠️ Logic verified correct via synthetic data + unit tests; depends on the ESPN piece above |
 | Weekly performance trend (Sleeper matchups) | ⚠️ Built + tested; no real games played yet this season to sync (it's August) |
 | Waiver/trade target identifier | ⚠️ Built + tested; same real-data caveat as above |
-| KeepTradeCut (KTC) scraper | ❌ **UNVERIFIED — genuinely uncertain.** This environment cannot reach keeptradecut.com at all. The parser is a best-effort guess at their page structure with 3 fallback strategies; each strategy is unit-tested against synthetic HTML matching what it expects, but none of that proves it matches the real site. **Run `fantasy-assistant sync-ktc` first and expect it might fail.** |
-| — 1QB vs Superflex split | ⚠️ Wired in, auto-detected from each league's roster settings (2+ QB slots or a Superflex/OP slot → superflex), tested — but the actual KTC query param used to fetch Superflex values (`?format=2`) is a guess, same unverified status as the rest of KTC. |
+| KeepTradeCut (KTC) scraper | ✅ **Verified live** — dynasty and devy, both 1QB and Superflex confirmed with real player data (Ja'Marr Chase, Bijan Robinson, Jeremiah Smith, Arch Manning, etc., sane values). Fixed a real bug found during verification: KTC nests both qb_modes per-record (`oneQBValues`/`superflexValues`), not flat top-level fields — the original `?format=2` URL guess was wrong and unnecessary, one page load has both. |
+| — 1QB vs Superflex split | ✅ Verified — auto-detected from each league's roster settings (2+ QB slots or a Superflex/OP slot → superflex) for buy-sell; explicit `--qb-mode` flag for `sync-ktc`/`devy-list` since those aren't tied to one league. |
 | FantasyPros scraper | ❌ **Same caveat as KTC** — untested against the real site. |
 | Reddit sentiment | ❌ **Cannot be tested at all yet** — needs a Reddit API app (client ID/secret) that only you can create, and this sandbox can't reach reddit.com anyway. Code is standard PRAW usage, structurally sound, never actually run. |
 | X/Twitter | 🚫 **Skipped, deliberately.** See "Why X/Twitter was skipped" below. |
-| Buy-low/sell-high engine | ⚠️ Combines the above signals; verified correct via synthetic data. Only as good as whichever of KTC/FantasyPros/Reddit actually works once you test them. |
-| Devy watchlist | ✅ Fully built and tested (it's just a manual list — no external dependency) |
+| Buy-low/sell-high engine | ⚠️ Combines the above signals correctly (verified via synthetic data + now real KTC values). Still needs weekly-points data (no games played yet) and FantasyPros/Reddit to be fully populated for redraft leagues. |
+| Devy watchlist | ✅ Fully built and tested (it's just a manual list — no external dependency), and now cross-references real KTC devy values |
 
-**Bottom line**: everything that only depends on Sleeper/ESPN (which this
-session proved it can reach once, via your machine) is solid. Everything
-that depends on KTC, FantasyPros, or Reddit is code I'm reasonably confident
-in structurally, but have zero live confirmation on — this sandbox is
-blocked from reaching any of those three sites. Treat those three as "try it
-and tell me what breaks," not "should just work."
+**Bottom line**: Sleeper, ESPN league sync, and KTC are all verified live.
+FantasyPros and Reddit remain untested against the real thing — this
+sandbox is blocked from reaching either site, so those still need the same
+"run it, tell me what breaks" treatment KTC just got (and got fixed by).
 
 ## Setup
 
@@ -94,23 +92,19 @@ on it and seeing which mode it reports).
 
 ## What to try first when you're back
 
-1. **`fantasy-assistant sync-rankings`** — pulls Sleeper's rank data (proven
+1. ~~`fantasy-assistant sync-ktc`~~ — **done.** Verified live, dynasty +
+   devy, both qb_modes, with a real bug found and fixed along the way.
+2. **`fantasy-assistant sync-rankings`** — pulls Sleeper's rank data (proven
    to work, piggybacks on the already-verified player sync) and ESPN's
    player pool (the new, unverified endpoint). If ESPN's part fails, paste
    the error — it'll likely be a wrong field name I can fix once I see the
    real shape.
-2. **`fantasy-assistant draft-board`** — once #1 works, this should show
+3. **`fantasy-assistant draft-board`** — once #2 works, this should show
    players where Sleeper and ESPN disagree on rank.
-3. **`fantasy-assistant sync-ktc --format dynasty --qb-mode 1qb`** — the
-   riskiest untested piece, doubly so for the Superflex query param guess.
-   If it raises `KTCParseError`, that's expected-possible, not a crisis —
-   the error message itself explains what to send back (or you can
-   view-source the page and paste the relevant `<script>` tag). Once basic
-   1QB sync works, try `--qb-mode superflex` and check whether the values
-   actually differ from the 1QB run — if they come back identical, the
-   `?format=2` guess is wrong and just re-fetched the same page.
-4. **`fantasy-assistant sync-fantasypros`** — same idea, `FantasyProsParseError`
-   if the page structure differs from what's assumed.
+4. **`fantasy-assistant sync-fantasypros`** — next up. `FantasyProsParseError`
+   if the page structure differs from what's assumed (likely, given KTC's
+   assumed structure was also wrong in the details even though the general
+   "JSON blob in a script tag" approach was right).
 5. **Reddit**: create a script app at https://www.reddit.com/prefs/apps
    (takes 2 minutes, just needs a Reddit account), set `REDDIT_CLIENT_ID`
    and `REDDIT_CLIENT_SECRET`, then `fantasy-assistant sync-reddit`.
