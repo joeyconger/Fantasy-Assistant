@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fantasy-assistant"
+version = "0.1.0"
+description = "Local decision-support tool for Sleeper/ESPN fantasy football leagues"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+    "click>=8.1",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "responses>=0.25",
+]
+
+[project.scripts]
+fantasy-assistant = "fantasy_assistant.cli:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fantasy_assistant"]

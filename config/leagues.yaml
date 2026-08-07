@@ -1,0 +1,24 @@
+# Local league configuration. League IDs aren't secret (they're public
+# identifiers), but ESPN cookies are — those go in config/secrets.yaml
+# (gitignored), never here.
+#
+# format: redraft | dynasty | devy
+#   - Sleeper tells us redraft vs. dynasty automatically (league settings.type),
+#     so "format" here is optional for those two — leave it unset and `sync-league`
+#     will fill it in and print what it detected.
+#   - Sleeper has no concept of "devy." If one of your dynasty leagues is the
+#     one where you stash college prospects, set format: devy explicitly here
+#     so the rest of the tool (buy-low/sell-high, devy tracking) treats it right.
+
+sleeper:
+  - league_id: "1389373095143284736"
+    format: null   # fill in after first sync, or set to redraft/dynasty/devy
+  - league_id: "1315737573154390016"
+    format: null
+  - league_id: "1313961246109761536"
+    format: null
+
+espn:
+  league_id: "509682142"
+  season: null      # e.g. 2026 — required before ESPN sync can run
+  private: null     # true/false — if true, put swid/espn_s2 in config/secrets.yaml

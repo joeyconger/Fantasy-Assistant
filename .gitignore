@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# local data — cached API pulls and the working DB, never commit these
+*.db
+*.sqlite
+*.sqlite3
+data/
+
+# ESPN cookies / secrets
+.env
+config/secrets.yaml
