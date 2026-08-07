@@ -16,12 +16,12 @@ def conn():
     return c
 
 
-def _add_league(conn, league_id="L1", format_="redraft", roster_positions=None):
+def _add_league(conn, league_id="L1", format_="redraft", roster_positions=None, platform="sleeper"):
     import json
 
     conn.execute(
-        "INSERT INTO leagues (league_id, platform, name, season, format, total_rosters, roster_positions) VALUES (?, 'sleeper', 'Test', '2026', ?, 1, ?)",
-        (league_id, format_, json.dumps(roster_positions) if roster_positions else None),
+        "INSERT INTO leagues (league_id, platform, name, season, format, total_rosters, roster_positions) VALUES (?, ?, 'Test', '2026', ?, 1, ?)",
+        (league_id, platform, format_, json.dumps(roster_positions) if roster_positions else None),
     )
 
 
@@ -266,3 +266,56 @@ def test_buy_low_sell_high_uses_superflex_values_for_superflex_league(conn):
     assert results[0]["market_delta"] == 0  # superflex delta, NOT the 1qb delta of +6000
     flags = [f for f, _ in results[0]["flags"]]
     assert "buy_low" in flags
+
+
+# ---- platform-awareness (waiver/trade/buy-sell must work for ESPN leagues too, not just Sleeper) ----
+
+
+def test_waiver_and_trade_targets_work_for_espn_league():
+    """Regression test: these functions used to hardcode platform='sleeper'
+    in their SQL joins, which meant an ESPN league would silently return
+    zero candidates (looking identical to 'no data yet') instead of
+    actually working. This proves an all-ESPN dataset produces results."""
+    from fantasy_assistant.analysis.waiver_targets import top_trade_targets, top_waiver_adds
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    init_db(conn)
+
+    _add_league(conn, platform="espn")
+    _add_player(conn, "e-rostered", "espn", "Rostered ESPN Guy", "WR")
+    _add_player(conn, "e-free", "espn", "Free ESPN Guy", "RB")
+    conn.execute("INSERT INTO roster_players (league_id, roster_id, player_id) VALUES ('L1', '1', 'e-rostered')")
+    conn.execute(
+        "INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES ('e-rostered', 'espn', 'espn_standard_rank', 12, ?)",
+        (NOW,),
+    )
+    for week, pts in [(1, 5.0), (2, 5.0), (3, 20.0), (4, 20.0)]:
+        conn.execute(
+            "INSERT INTO player_weekly_points (league_id, player_id, week, points, fetched_at) VALUES ('L1', 'e-rostered', ?, ?, ?)",
+            (week, pts, NOW),
+        )
+        conn.execute(
+            "INSERT INTO player_weekly_points (league_id, player_id, week, points, fetched_at) VALUES ('L1', 'e-free', ?, ?, ?)",
+            (week, pts, NOW),
+        )
+    conn.commit()
+
+    adds = top_waiver_adds(conn, "L1")
+    assert [a["player_id"] for a in adds] == ["e-free"]
+
+    targets = top_trade_targets(conn, "L1", min_trend=2.0)
+    assert len(targets) == 1
+    assert targets[0]["player_id"] == "e-rostered"
+    assert targets[0]["rank"] == 12  # confirms the ESPN-specific rank source was used, not Sleeper's
+
+
+def test_unsynced_league_raises_clear_error():
+    from fantasy_assistant.analysis.waiver_targets import top_waiver_adds
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    init_db(conn)
+
+    with pytest.raises(ValueError, match="hasn't been synced"):
+        top_waiver_adds(conn, "NONEXISTENT")

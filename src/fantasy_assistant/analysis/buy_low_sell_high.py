@@ -81,21 +81,27 @@ def find_buy_low_sell_high(conn: sqlite3.Connection, league_id: str, league_form
     trends = compute_trends(conn, league_id)
     sentiment = _sentiment_map(conn)
 
-    league_row = conn.execute("SELECT roster_positions FROM leagues WHERE league_id = ?", (league_id,)).fetchone()
-    qb_mode = detect_qb_mode(league_row["roster_positions"] if league_row else None)
+    league_row = conn.execute("SELECT platform, roster_positions FROM leagues WHERE league_id = ?", (league_id,)).fetchone()
+    if not league_row:
+        raise ValueError(f"League {league_id} hasn't been synced yet.")
+    platform = league_row["platform"]
+    qb_mode = detect_qb_mode(league_row["roster_positions"])
 
     market_format = league_format if league_format in ("dynasty", "devy") else None
     value_deltas = _market_value_delta_map(conn, market_format, qb_mode) if market_format else {}
     rank_deltas = {} if market_format else _expert_rank_delta_map(conn)
 
+    # roster_players.player_id is only meaningful joined against its own
+    # platform's players rows — a roster only ever holds players from the
+    # platform it was synced from (see schema.sql's note on this).
     rows = conn.execute(
         """
         SELECT DISTINCT rp.player_id, p.full_name, p.position, p.team
         FROM roster_players rp
-        JOIN players p ON p.player_id = rp.player_id AND p.platform = 'sleeper'
+        JOIN players p ON p.player_id = rp.player_id AND p.platform = ?
         WHERE rp.league_id = ?
         """,
-        (league_id,),
+        (platform, league_id),
     ).fetchall()
 
     results = []

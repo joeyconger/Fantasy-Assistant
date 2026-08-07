@@ -213,7 +213,10 @@ def sync_weekly_points_cmd(league_id: str, weeks: int):
 def waiver_targets_cmd(league_id: str, limit: int):
     """Show available (unrostered) players trending up recently."""
     conn = db_module.get_connection()
-    results = top_waiver_adds(conn, league_id, limit=limit)
+    try:
+        results = top_waiver_adds(conn, league_id, limit=limit)
+    except ValueError as exc:
+        raise click.ClickException(str(exc))
     if not results:
         click.echo("No candidates found. Run sync-weekly-points and sync-rankings first.")
         return
@@ -231,7 +234,10 @@ def waiver_targets_cmd(league_id: str, limit: int):
 def trade_targets_cmd(league_id: str, limit: int):
     """Show rostered players trending up — possible buy-before-price-catches-up trade targets."""
     conn = db_module.get_connection()
-    results = top_trade_targets(conn, league_id, limit=limit)
+    try:
+        results = top_trade_targets(conn, league_id, limit=limit)
+    except ValueError as exc:
+        raise click.ClickException(str(exc))
     if not results:
         click.echo("No candidates found. Run sync-weekly-points and sync-rankings first.")
         return

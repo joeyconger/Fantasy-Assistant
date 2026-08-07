@@ -95,12 +95,12 @@ def _page(title: str, body: str, nav_extra: str = "") -> str:
 
 
 def _league_select(conn, current: str | None, action_base: str) -> str:
-    leagues = conn.execute("SELECT league_id, name FROM leagues WHERE platform = 'sleeper' ORDER BY name").fetchall()
+    leagues = conn.execute("SELECT league_id, name, platform FROM leagues ORDER BY platform, name").fetchall()
     if not leagues:
-        return "<p class='empty'>No Sleeper leagues synced yet.</p>"
+        return "<p class='empty'>No leagues synced yet.</p>"
     options = "".join(
         f'<option value="{html.escape(l["league_id"])}" {"selected" if l["league_id"] == current else ""}>'
-        f'{html.escape(l["name"] or l["league_id"])}</option>'
+        f'{html.escape(l["name"] or l["league_id"])} ({html.escape(l["platform"])})</option>'
         for l in leagues
     )
     return f"""
@@ -196,7 +196,7 @@ def waivers_page(_user: str = Depends(require_auth), league_id: str | None = Que
     db_module.init_db(conn)
     try:
         if not league_id:
-            row = conn.execute("SELECT league_id FROM leagues WHERE platform = 'sleeper' ORDER BY name LIMIT 1").fetchone()
+            row = conn.execute("SELECT league_id FROM leagues ORDER BY platform, name LIMIT 1").fetchone()
             league_id = row["league_id"] if row else None
 
         selector = _league_select(conn, league_id, "/waivers")
@@ -242,7 +242,7 @@ def buy_sell_page(_user: str = Depends(require_auth), league_id: str | None = Qu
     db_module.init_db(conn)
     try:
         if not league_id:
-            row = conn.execute("SELECT league_id FROM leagues WHERE platform = 'sleeper' ORDER BY name LIMIT 1").fetchone()
+            row = conn.execute("SELECT league_id FROM leagues ORDER BY platform, name LIMIT 1").fetchone()
             league_id = row["league_id"] if row else None
 
         selector = _league_select(conn, league_id, "/buy-sell")
