@@ -1,125 +1,133 @@
 # Fantasy Assistant
 
-Local decision-support tool for Sleeper (and eventually ESPN) fantasy football
-leagues — league sync, draft assistant, waiver/trade targeting, a buy-low/
-sell-high engine, and devy prospect tracking. Runs entirely on your machine;
-nothing is deployed anywhere.
+Local decision-support tool for Sleeper and ESPN fantasy football leagues —
+league sync, draft assistant, waiver/trade targeting, a buy-low/sell-high
+engine, and devy prospect tracking. Runs entirely on your machine; nothing
+is deployed anywhere.
 
 ## Status
 
-**Phase 1 (league sync) is built for Sleeper.** Draft assistant, waiver/trade
-targeting, buy-low/sell-high, devy tracking, and ESPN sync are not built yet —
-see the task list in the repo for what's next.
+**Phase 1 (league sync) is done and confirmed working against the live
+Sleeper API** — all three Sleeper leagues sync correctly:
 
-> **Note on how this was built:** development happened in a sandboxed remote
-> session with no outbound network access to `api.sleeper.app` (or ESPN,
-> KeepTradeCut, FantasyPros, Reddit). The Sleeper sync logic is fully unit
-> tested against mocked API responses shaped like Sleeper's real payloads, but
-> it has **not been run against the live API yet**. Run the "Verify against
-> the real Sleeper API" steps below on your machine before trusting the data.
+| League | Format |
+|---|---|
+| BMFS (`1389373095143284736`) | redraft |
+| Weekend Warriors (`1315737573154390016`) | dynasty |
+| Dollars for Devys (`1313961246109761536`) | devy |
+
+**ESPN sync is built but not yet verified against the live API** — same
+situation Sleeper was in before you tested it: unit tested against mocked
+responses shaped like ESPN's real payloads, but the ESPN API is unofficial
+(no public docs, field names reverse-engineered), so it needs a real run to
+confirm. See "Verify ESPN sync" below.
+
+Not built yet: draft assistant, waiver/trade targeting, buy-low/sell-high
+engine, devy tracking module.
 
 ## Setup
 
 Requires Python 3.10+.
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
 ```
 
-## Configure your leagues
-
-Your league IDs are already filled in at `config/leagues.yaml`:
-
-```yaml
-sleeper:
-  - league_id: "1389373095143284736"
-    format: null
-  - league_id: "1315737573154390016"
-    format: null
-  - league_id: "1313961246109761536"
-    format: null
-
-espn:
-  league_id: "509682142"
-  season: null
-  private: null
-```
-
-Sleeper tells us redraft vs. dynasty automatically (`settings.type` in the
-league object), so `format: null` is fine for those two — `sync-league` will
-detect it and print what it found. **Devy isn't something Sleeper knows
-about** — if one of your three leagues is the one where you stash college
-prospects, edit its `format:` to `devy` in this file so later features (the
-buy-low/sell-high engine, devy tracking) treat it correctly.
-
-ESPN sync isn't built yet (Phase 2). When we get there, fill in `season`,
-and if the league is private, `private: true` plus your `SWID`/`espn_s2`
-cookies in a new `config/secrets.yaml` (gitignored) — I'll walk you through
-grabbing those from your browser at that point.
+(macOS/Linux: `python3 -m venv .venv && source .venv/bin/activate`)
 
 ## Run the tests (no network required)
 
-```bash
+```powershell
 pytest tests/ -v
 ```
 
-These mock every Sleeper HTTP call, so they verify the sync logic (upserts,
-format detection, taxi/starter/IR flags, the 24h player-cache TTL) without
-hitting the real API.
+Mocks every Sleeper and ESPN HTTP call — verifies upserts, format handling,
+starter/taxi/IR flags, the 24h player-cache TTL, the 401→"private league"
+error path, and that Sleeper/ESPN player IDs can't collide in the DB.
 
-## Verify against the real Sleeper API
+## Sync your leagues
 
-This is the step that needs to happen on your machine, not in the sandbox
-that built this:
-
-```bash
+```powershell
 fantasy-assistant sync-all
 ```
 
-This will:
-1. Pull the full Sleeper NFL player pool (cached 24h — a multi-MB one-time pull)
-2. Sync each league in `config/leagues.yaml`: settings, rosters, owners, standings
-3. Print the detected format for each league, so you can confirm and fill in `devy`
+Pulls the Sleeper player pool (cached 24h) + all three Sleeper leagues, then
+attempts the ESPN league if `config/leagues.yaml` has a season set.
 
-Then check standings for a specific league:
+## Verify ESPN sync
 
-```bash
+Your ESPN league (`509682142`, season 2026) hasn't been tried against the
+live API yet. Run:
+
+```powershell
+fantasy-assistant sync-espn
+```
+
+Two outcomes:
+
+- **It works** — prints `Synced '<league name>' (509682142) — format: redraft`.
+  Paste that back to me, and if the "Dollars for Devys"-style situation
+  applies here too (i.e. this ESPN league is actually dynasty/devy), tell me
+  and I'll set `format:` in `config/leagues.yaml` like we did for Sleeper.
+- **It fails with an auth error** — the league is private. Do this:
+  1. Copy `config/secrets.yaml.example` to `config/secrets.yaml`
+  2. Log into fantasy.espn.com in your browser
+  3. Open DevTools (F12) → Application tab (Chrome/Edge) or Storage tab
+     (Firefox) → Cookies → `https://fantasy.espn.com`
+  4. Copy the `SWID` cookie value (looks like `{ABC123-...}`) and the
+     `espn_s2` cookie value (a long string) into `config/secrets.yaml`
+  5. Run `fantasy-assistant sync-espn` again
+
+`config/secrets.yaml` is gitignored — cookies never get committed.
+
+## Check standings
+
+```powershell
 fantasy-assistant standings 1389373095143284736
 ```
 
-If anything looks wrong (missing team names, wrong format detected, etc.),
-let me know what you see and I'll fix it before we move to Phase 2.
+Works for any synced league — Sleeper or ESPN — by league ID.
 
 ## CLI reference
 
 | Command | What it does |
 |---|---|
 | `fantasy-assistant init-db` | Create the SQLite DB and tables |
-| `fantasy-assistant sync-players [--force]` | Refresh the cached NFL player pool |
-| `fantasy-assistant sync-league LEAGUE_ID [--format redraft\|dynasty\|devy]` | Sync one league |
-| `fantasy-assistant sync-all` | Sync players + every league in `config/leagues.yaml` |
+| `fantasy-assistant sync-players [--force]` | Refresh the cached Sleeper NFL player pool |
+| `fantasy-assistant sync-league LEAGUE_ID [--format redraft\|dynasty\|devy]` | Sync one Sleeper league |
+| `fantasy-assistant sync-espn` | Sync the ESPN league from config |
+| `fantasy-assistant sync-all` | Sync players + every Sleeper league + ESPN (if configured) |
 | `fantasy-assistant standings LEAGUE_ID` | Print standings for a synced league |
 
 ## Data
 
 Everything is cached locally in SQLite at `data/fantasy_assistant.db`
-(gitignored — it's your data, not something to commit). Delete it any time
-to start fresh; `init-db` will recreate the schema.
+(gitignored). Delete it any time to start fresh; `init-db` recreates the
+schema.
 
 ## Project layout
 
 ```
+config/
+  leagues.yaml           # your league IDs, formats, ESPN season
+  secrets.yaml.example    # template for ESPN cookies (copy to secrets.yaml)
 src/fantasy_assistant/
-  cli.py              # command-line entrypoints
-  config.py           # loads config/leagues.yaml (+ secrets.yaml)
-  db.py                # SQLite connection/init
-  schema.sql           # table definitions
+  cli.py                  # command-line entrypoints
+  config.py               # loads config/leagues.yaml (+ secrets.yaml)
+  db.py                   # SQLite connection/init
+  schema.sql               # table definitions (players keyed by player_id+platform,
+                            # since Sleeper and ESPN assign independent IDs)
   platforms/
     sleeper/
-      client.py        # thin Sleeper API wrapper
-      sync.py           # fetch + upsert logic
+      client.py           # thin Sleeper API wrapper
+      sync.py              # fetch + upsert logic
+    espn/
+      client.py            # thin ESPN API wrapper (public + cookie auth)
+      constants.py         # ESPN's proTeamId/positionId/lineupSlotId maps
+      sync.py               # fetch + upsert logic
 tests/
-  test_sleeper_sync.py # sync logic tested against mocked API responses
+  test_sleeper_sync.py    # sync logic tested against mocked API responses
+  test_espn_sync.py        # same, for ESPN, incl. private-league auth path
 ```

@@ -155,7 +155,7 @@ def sync_players(conn: sqlite3.Connection, client: SleeperClient, force: bool = 
             """
             INSERT INTO players (player_id, platform, full_name, position, team, status, age, years_exp, updated_at)
             VALUES (?, 'sleeper', ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(player_id) DO UPDATE SET
+            ON CONFLICT(player_id, platform) DO UPDATE SET
                 full_name=excluded.full_name,
                 position=excluded.position,
                 team=excluded.team,

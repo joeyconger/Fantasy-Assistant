@@ -23,6 +23,7 @@ class EspnLeagueConfig:
     league_id: str
     season: int | None = None
     private: bool | None = None
+    format: str | None = None  # redraft | dynasty | devy — ESPN gives no auto-detect signal
     swid: str | None = None
     espn_s2: str | None = None
 
@@ -57,6 +58,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH, secrets_path: Path = DEFAULT_S
             league_id=str(espn_raw["league_id"]),
             season=espn_raw.get("season"),
             private=espn_raw.get("private"),
+            format=espn_raw.get("format"),
             swid=espn_secrets.get("swid"),
             espn_s2=espn_secrets.get("espn_s2"),
         )

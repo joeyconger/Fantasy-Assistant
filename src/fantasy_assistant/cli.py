@@ -4,6 +4,8 @@ import click
 
 from . import config as config_module
 from . import db as db_module
+from .platforms.espn.client import ESPNAPIError, ESPNAuthRequired, ESPNClient
+from .platforms.espn.sync import sync_league as espn_sync_league
 from .platforms.sleeper.client import SleeperAPIError, SleeperClient
 from .platforms.sleeper.sync import sync_league, sync_players
 
@@ -53,9 +55,36 @@ def sync_league_cmd(league_id: str, format_override: str | None):
     click.echo(f"Synced '{result['name']}' ({result['league_id']}) — format: {result['format']}")
 
 
+@cli.command("sync-espn")
+def sync_espn_cmd():
+    """Sync the ESPN league's settings, rosters, and standings."""
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+
+    try:
+        app_config = config_module.load_config()
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc))
+
+    if not app_config.espn_league:
+        raise click.ClickException("No ESPN league configured in config/leagues.yaml.")
+    espn_cfg = app_config.espn_league
+    if not espn_cfg.season:
+        raise click.ClickException("Set espn.season in config/leagues.yaml before syncing.")
+
+    client = ESPNClient(swid=espn_cfg.swid, espn_s2=espn_cfg.espn_s2)
+    try:
+        result = espn_sync_league(conn, client, espn_cfg.league_id, espn_cfg.season, format_override=espn_cfg.format)
+    except ESPNAuthRequired as exc:
+        raise click.ClickException(str(exc))
+    except ESPNAPIError as exc:
+        raise click.ClickException(str(exc))
+    click.echo(f"Synced '{result['name']}' ({result['league_id']}) — format: {result['format']}")
+
+
 @cli.command("sync-all")
 def sync_all_cmd():
-    """Sync players plus every Sleeper league listed in config/leagues.yaml."""
+    """Sync players plus every Sleeper league listed in config/leagues.yaml, and ESPN if configured."""
     conn = db_module.get_connection()
     db_module.init_db(conn)
     client = SleeperClient()
@@ -77,7 +106,18 @@ def sync_all_cmd():
         raise click.ClickException(str(exc))
 
     if app_config.espn_league:
-        click.echo("ESPN league configured but ESPN sync isn't built yet (Phase 2) — skipped.")
+        espn_cfg = app_config.espn_league
+        if not espn_cfg.season:
+            click.echo("ESPN league configured but no season set in config/leagues.yaml — skipped.")
+        else:
+            espn_client = ESPNClient(swid=espn_cfg.swid, espn_s2=espn_cfg.espn_s2)
+            try:
+                result = espn_sync_league(conn, espn_client, espn_cfg.league_id, espn_cfg.season, format_override=espn_cfg.format)
+                click.echo(f"ESPN league: synced '{result['name']}' ({result['league_id']}) — format: {result['format']}")
+            except ESPNAuthRequired as exc:
+                click.echo(f"ESPN league: skipped — {exc}")
+            except ESPNAPIError as exc:
+                click.echo(f"ESPN league: skipped — {exc}")
 
 
 @cli.command("standings")

@@ -45,16 +45,22 @@ CREATE TABLE IF NOT EXISTS roster_players (
     PRIMARY KEY (league_id, roster_id, player_id)
 );
 
+-- player_id alone isn't unique across platforms — Sleeper and ESPN each
+-- assign their own independent numeric IDs, so the same ID can refer to two
+-- different real players. roster_players.player_id is disambiguated by
+-- joining through leagues.platform (a roster only ever holds players from
+-- its own platform).
 CREATE TABLE IF NOT EXISTS players (
-    player_id TEXT PRIMARY KEY,
-    platform TEXT NOT NULL DEFAULT 'sleeper',
+    player_id TEXT NOT NULL,
+    platform TEXT NOT NULL,
     full_name TEXT,
     position TEXT,
     team TEXT,
     status TEXT,
     age INTEGER,
     years_exp INTEGER,
-    updated_at TEXT
+    updated_at TEXT,
+    PRIMARY KEY (player_id, platform)
 );
 
 -- Single-row table tracking when the full Sleeper player blob was last pulled,
