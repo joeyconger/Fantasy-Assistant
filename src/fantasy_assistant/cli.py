@@ -4,10 +4,23 @@ import click
 
 from . import config as config_module
 from . import db as db_module
+from .analysis.buy_low_sell_high import find_buy_low_sell_high
+from .analysis.draft_board import find_rank_inefficiencies
+from .analysis.waiver_targets import top_trade_targets, top_waiver_adds
+from . import devy as devy_module
 from .platforms.espn.client import ESPNAPIError, ESPNAuthRequired, ESPNClient
+from .platforms.espn.rankings import sync_player_pool as espn_sync_player_pool
 from .platforms.espn.sync import sync_league as espn_sync_league
+from .platforms.fantasypros.client import FantasyProsClient, FantasyProsFetchError, FantasyProsParseError
+from .platforms.fantasypros.sync import sync_rankings as fantasypros_sync_rankings
+from .platforms.ktc.client import KTCClient, KTCFetchError, KTCParseError
+from .platforms.ktc.sync import sync_values as ktc_sync_values
+from .analysis.sentiment import score_player_mentions
+from .platforms.reddit.client import RedditNotConfigured, build_reddit_client, fetch_recent_posts
+from .platforms.reddit.sync import sync_sentiment, tracked_player_names
 from .platforms.sleeper.client import SleeperAPIError, SleeperClient
 from .platforms.sleeper.sync import sync_league, sync_players
+from .platforms.sleeper.weekly_points import current_completed_weeks, sync_weekly_points
 
 
 @click.group()
@@ -118,6 +131,247 @@ def sync_all_cmd():
                 click.echo(f"ESPN league: skipped — {exc}")
             except ESPNAPIError as exc:
                 click.echo(f"ESPN league: skipped — {exc}")
+
+            try:
+                count = espn_sync_player_pool(conn, espn_client, espn_cfg.season)
+                click.echo(f"ESPN rankings: synced {count} players")
+            except (ESPNAuthRequired, ESPNAPIError) as exc:
+                click.echo(f"ESPN rankings: skipped — {exc}")
+
+
+@cli.command("sync-rankings")
+def sync_rankings_cmd():
+    """Sync overall-rank/ADP data: Sleeper search_rank (from sync-players) + ESPN's full player pool."""
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+
+    client = SleeperClient()
+    try:
+        count = sync_players(conn, client)
+        click.echo(f"Sleeper rankings: refreshed with player sync ({count} players)" if count else "Sleeper rankings: player cache fresh, skipped")
+    except SleeperAPIError as exc:
+        raise click.ClickException(str(exc))
+
+    try:
+        app_config = config_module.load_config()
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc))
+
+    if not app_config.espn_league or not app_config.espn_league.season:
+        click.echo("ESPN rankings: no ESPN league/season configured — skipped.")
+        return
+
+    espn_cfg = app_config.espn_league
+    espn_client = ESPNClient(swid=espn_cfg.swid, espn_s2=espn_cfg.espn_s2)
+    try:
+        count = espn_sync_player_pool(conn, espn_client, espn_cfg.season)
+        click.echo(f"ESPN rankings: synced {count} players")
+    except (ESPNAuthRequired, ESPNAPIError) as exc:
+        click.echo(f"ESPN rankings: failed — {exc}")
+
+
+@cli.command("draft-board")
+@click.option("--limit", default=25, help="How many top inefficiencies to show.")
+def draft_board_cmd(limit: int):
+    """Show players where Sleeper and ESPN rank/ADP disagree most — possible draft value."""
+    conn = db_module.get_connection()
+    results = find_rank_inefficiencies(conn, limit=limit)
+    if not results:
+        click.echo("No matched players with ranks from both platforms yet. Run sync-rankings first.")
+        return
+
+    click.echo(f"{'Player':<25} {'Pos':<5} {'Sleeper':>8} {'ESPN':>8} {'Delta':>7}  Note")
+    for r in results:
+        click.echo(
+            f"{r['name']:<25} {r['position']:<5} {r['sleeper_rank']:>8} {r['espn_rank']:>8} "
+            f"{r['delta']:>7}  {r['note']}"
+        )
+
+
+@cli.command("sync-weekly-points")
+@click.argument("league_id")
+@click.option("--weeks", default=4, help="How many recent completed weeks to pull.")
+def sync_weekly_points_cmd(league_id: str, weeks: int):
+    """Pull recent weekly fantasy points for a Sleeper league (performance trend data)."""
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+    client = SleeperClient()
+    try:
+        week_list = current_completed_weeks(client, lookback=weeks)
+        if not week_list:
+            click.echo("No completed weeks yet this season (preseason or week 1) — nothing to sync.")
+            return
+        count = sync_weekly_points(conn, client, league_id, week_list)
+        click.echo(f"Synced {count} player-week point entries for weeks {week_list}.")
+    except SleeperAPIError as exc:
+        raise click.ClickException(str(exc))
+
+
+@cli.command("waiver-targets")
+@click.argument("league_id")
+@click.option("--limit", default=15)
+def waiver_targets_cmd(league_id: str, limit: int):
+    """Show available (unrostered) players trending up recently."""
+    conn = db_module.get_connection()
+    results = top_waiver_adds(conn, league_id, limit=limit)
+    if not results:
+        click.echo("No candidates found. Run sync-weekly-points and sync-rankings first.")
+        return
+    click.echo(f"{'Player':<25} {'Pos':<5} {'Team':<5} {'Recent':>7} {'Season':>7} {'Trend':>7} {'Rank':>6}")
+    for r in results:
+        click.echo(
+            f"{r['name']:<25} {r['position']:<5} {(r['team'] or ''):<5} {r['recent_avg']:>7} "
+            f"{r['season_avg']:>7} {r['trend']:>7} {r['rank'] or '-':>6}"
+        )
+
+
+@cli.command("trade-targets")
+@click.argument("league_id")
+@click.option("--limit", default=15)
+def trade_targets_cmd(league_id: str, limit: int):
+    """Show rostered players trending up — possible buy-before-price-catches-up trade targets."""
+    conn = db_module.get_connection()
+    results = top_trade_targets(conn, league_id, limit=limit)
+    if not results:
+        click.echo("No candidates found. Run sync-weekly-points and sync-rankings first.")
+        return
+    click.echo(f"{'Player':<25} {'Pos':<5} {'Owned By':<20} {'Recent':>7} {'Trend':>7} {'Rank':>6}")
+    for r in results:
+        click.echo(
+            f"{r['name']:<25} {r['position']:<5} {r['owned_by']:<20} {r['recent_avg']:>7} "
+            f"{r['trend']:>7} {r['rank'] or '-':>6}"
+        )
+
+
+@cli.command("sync-ktc")
+@click.option("--format", "format_", type=click.Choice(["dynasty", "devy"]), default="dynasty")
+@click.option("--force", is_flag=True)
+def sync_ktc_cmd(format_: str, force: bool):
+    """Sync KeepTradeCut dynasty/devy trade values (UNVERIFIED — see platforms/ktc/client.py)."""
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+    client = KTCClient()
+    try:
+        count = ktc_sync_values(conn, client, format_, force=force)
+    except KTCFetchError as exc:
+        raise click.ClickException(f"Couldn't reach KTC: {exc}")
+    except KTCParseError as exc:
+        raise click.ClickException(
+            f"{exc}\n\nThis was never tested against the live site — the parser needs a real look "
+            "at the page structure. Paste this error back and it can be fixed."
+        )
+    click.echo(f"Synced {count} {format_} values from KTC." if count else "KTC cache fresh (<12h) — skipped. Use --force.")
+
+
+@cli.command("sync-fantasypros")
+@click.option("--force", is_flag=True)
+def sync_fantasypros_cmd(force: bool):
+    """Sync FantasyPros consensus redraft rankings (UNVERIFIED — see platforms/fantasypros/client.py)."""
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+    client = FantasyProsClient()
+    try:
+        count = fantasypros_sync_rankings(conn, client, force=force)
+    except FantasyProsFetchError as exc:
+        raise click.ClickException(f"Couldn't reach FantasyPros: {exc}")
+    except FantasyProsParseError as exc:
+        raise click.ClickException(
+            f"{exc}\n\nThis was never tested against the live site — the parser needs a real look "
+            "at the page structure. Paste this error back and it can be fixed."
+        )
+    click.echo(f"Synced {count} FantasyPros rankings." if count else "FantasyPros cache fresh (<12h) — skipped. Use --force.")
+
+
+@cli.command("sync-reddit")
+@click.option("--limit", default=100, help="Posts to scan per subreddit.")
+def sync_reddit_cmd(limit: int):
+    """Pull recent Reddit posts and score sentiment for players in your synced leagues."""
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+    try:
+        reddit = build_reddit_client()
+    except RedditNotConfigured as exc:
+        raise click.ClickException(str(exc))
+
+    player_names = tracked_player_names(conn)
+    if not player_names:
+        click.echo("No rostered players found — sync a league first.")
+        return
+
+    posts = fetch_recent_posts(reddit, limit=limit)
+    scored = score_player_mentions(posts, player_names)
+    count = sync_sentiment(conn, scored)
+    click.echo(f"Scanned {len(posts)} posts, scored sentiment for {count} mentioned players.")
+
+
+@cli.command("buy-sell")
+@click.argument("league_id")
+@click.option("--limit", default=25)
+def buy_sell_cmd(league_id: str, limit: int):
+    """Flag buy-low/sell-high candidates on your roster (performance vs. market/sentiment divergence)."""
+    conn = db_module.get_connection()
+    league = conn.execute("SELECT format FROM leagues WHERE league_id = ?", (league_id,)).fetchone()
+    if not league:
+        raise click.ClickException(f"League {league_id} hasn't been synced yet.")
+
+    results = find_buy_low_sell_high(conn, league_id, league["format"] or "redraft", limit=limit)
+    if not results:
+        click.echo(
+            "No flags yet. This needs sync-weekly-points plus at least one of sync-ktc "
+            "(dynasty/devy) / sync-fantasypros (redraft) / sync-reddit populated."
+        )
+        return
+
+    for r in results:
+        click.echo(f"\n{r['name']} ({r['position']}, {r['team']})")
+        click.echo(f"  Recent avg: {r['recent_avg']}  Season avg: {r['season_avg']}  Trend: {r['perf_trend']:+}")
+        if r["market_delta"] is not None:
+            click.echo(f"  Market delta: {r['market_delta']:+}")
+        if r["sentiment"] is not None:
+            click.echo(f"  Reddit sentiment: {r['sentiment']:+}")
+        for flag, reason in r["flags"]:
+            click.echo(f"  [{flag.upper().replace('_', '-')}] {reason}")
+
+
+@cli.command("devy-add")
+@click.argument("full_name")
+@click.option("--position", default=None)
+@click.option("--college", default=None)
+@click.option("--notes", default=None)
+def devy_add_cmd(full_name: str, position: str | None, college: str | None, notes: str | None):
+    """Add a college prospect to the devy watchlist."""
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+    prospect_id = devy_module.add_prospect(conn, full_name, position, college, notes)
+    click.echo(f"Added #{prospect_id}: {full_name}")
+
+
+@cli.command("devy-remove")
+@click.argument("prospect_id", type=int)
+def devy_remove_cmd(prospect_id: int):
+    """Remove a prospect from the devy watchlist."""
+    conn = db_module.get_connection()
+    if devy_module.remove_prospect(conn, prospect_id):
+        click.echo(f"Removed #{prospect_id}")
+    else:
+        click.echo(f"No prospect #{prospect_id} found.")
+
+
+@cli.command("devy-list")
+def devy_list_cmd():
+    """List the devy watchlist, with KTC devy value if synced (sync-ktc --format devy)."""
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+    prospects = devy_module.list_prospects(conn)
+    if not prospects:
+        click.echo("Watchlist is empty. Add one with devy-add.")
+        return
+    click.echo(f"{'#':<4} {'Name':<25} {'Pos':<5} {'College':<20} {'KTC Val':>8} {'KTC Rk':>7}")
+    for p in prospects:
+        click.echo(
+            f"{p['id']:<4} {p['full_name']:<25} {(p['position'] or ''):<5} {(p['college'] or ''):<20} "
+            f"{p['ktc_value'] if p['ktc_value'] is not None else '-':>8} {p['ktc_rank'] if p['ktc_rank'] is not None else '-':>7}"
+        )
 
 
 @cli.command("standings")

@@ -68,3 +68,13 @@ class SleeperClient:
         Sleeper asks that it be fetched at most once per day, so callers should
         cache it (see sync.sync_players)."""
         return self._get(f"/players/{sport}") or {}
+
+    def get_nfl_state(self) -> dict:
+        """Current NFL week/season — used to figure out which weeks have data."""
+        return self._get("/state/nfl") or {}
+
+    def get_matchups(self, league_id: str, week: int) -> list[dict]:
+        """Per-roster matchup data for one week, including players_points
+        (player_id -> fantasy points scored that week under this league's
+        scoring settings)."""
+        return self._get(f"/league/{league_id}/matchups/{week}") or []

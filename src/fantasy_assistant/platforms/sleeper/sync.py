@@ -176,6 +176,22 @@ def sync_players(conn: sqlite3.Connection, client: SleeperClient, force: bool = 
             ),
         )
 
+        # search_rank is Sleeper's own overall-relevance ordering (used to
+        # power their player search) — not literally "average draft
+        # position," but a usable ADP-like proxy for the same purpose.
+        search_rank = p.get("search_rank")
+        if search_rank is not None:
+            conn.execute(
+                """
+                INSERT INTO player_rankings (player_id, platform, source, overall_rank, position_rank, adp, fetched_at)
+                VALUES (?, 'sleeper', 'sleeper_search_rank', ?, NULL, NULL, ?)
+                ON CONFLICT(player_id, platform, source) DO UPDATE SET
+                    overall_rank=excluded.overall_rank,
+                    fetched_at=excluded.fetched_at
+                """,
+                (player_id, search_rank, now),
+            )
+
     conn.execute(
         """
         INSERT INTO players_cache_meta (id, fetched_at) VALUES (1, ?)

@@ -1,40 +1,37 @@
 # Fantasy Assistant
 
 Decision-support tool for Sleeper and ESPN fantasy football leagues — league
-sync, draft assistant, waiver/trade targeting, a buy-low/sell-high engine,
-and devy prospect tracking. Usable as a local CLI, or deployed (e.g. on
-Railway) as a small shared web dashboard.
+sync, a draft-value inefficiency finder, waiver/trade targeting, a buy-low/
+sell-high engine, and devy prospect tracking. Usable as a local CLI, or
+deployed (e.g. on Railway) as a small shared web dashboard.
 
-## Status
+## Status at a glance
 
-**Phase 1 (league sync) is done and confirmed working against the live
-Sleeper API** — all three Sleeper leagues sync correctly:
-
-| League | Format |
+| Piece | Status |
 |---|---|
-| BMFS (`1389373095143284736`) | redraft |
-| Weekend Warriors (`1315737573154390016`) | dynasty |
-| Dollars for Devys (`1313961246109761536`) | devy |
+| Sleeper sync (leagues, rosters, standings, players) | ✅ **Verified live** — all 3 leagues sync correctly |
+| ESPN league sync (rosters, standings) | ✅ **Verified live** — private league, cookies working |
+| Web dashboard + Railway deploy | ✅ **Deployed and live**, shared login |
+| Sleeper rank data (`search_rank`) | ✅ Verified live (part of the already-proven player sync) |
+| ESPN full player-pool rankings/ADP | ⚠️ **Built, unit-tested, NOT run live** — new endpoint, different from the proven league endpoint |
+| Draft board (rank inefficiency finder) | ⚠️ Logic verified correct via synthetic data + unit tests; depends on the ESPN piece above |
+| Weekly performance trend (Sleeper matchups) | ⚠️ Built + tested; no real games played yet this season to sync (it's August) |
+| Waiver/trade target identifier | ⚠️ Built + tested; same real-data caveat as above |
+| KeepTradeCut (KTC) scraper | ❌ **UNVERIFIED — genuinely uncertain.** This environment cannot reach keeptradecut.com at all. The parser is a best-effort guess at their page structure with 3 fallback strategies; each strategy is unit-tested against synthetic HTML matching what it expects, but none of that proves it matches the real site. **Run `fantasy-assistant sync-ktc` first and expect it might fail.** |
+| FantasyPros scraper | ❌ **Same caveat as KTC** — untested against the real site. |
+| Reddit sentiment | ❌ **Cannot be tested at all yet** — needs a Reddit API app (client ID/secret) that only you can create, and this sandbox can't reach reddit.com anyway. Code is standard PRAW usage, structurally sound, never actually run. |
+| X/Twitter | 🚫 **Skipped, deliberately.** See "Why X/Twitter was skipped" below. |
+| Buy-low/sell-high engine | ⚠️ Combines the above signals; verified correct via synthetic data. Only as good as whichever of KTC/FantasyPros/Reddit actually works once you test them. |
+| Devy watchlist | ✅ Fully built and tested (it's just a manual list — no external dependency) |
 
-**ESPN sync is built but not yet verified against the live API** — same
-situation Sleeper was in before you tested it: unit tested against mocked
-responses shaped like ESPN's real payloads, but the ESPN API is unofficial
-(no public docs, field names reverse-engineered), so it needs a real run to
-confirm. See "Verify ESPN sync" below.
-
-**Web dashboard is built and smoke-tested locally** (auth gating, HTML
-rendering, the sync trigger all pass automated tests + a manual server run)
-but **not yet deployed to Railway** — that requires your Railway account, so
-it's the next thing for you to do. See "Deploy to Railway" below.
-
-Not built yet: draft assistant, waiver/trade targeting, buy-low/sell-high
-engine, devy tracking module, per-user accounts (the web dashboard is one
-shared login for now — fine for you + a few trusted friends, not real
-multi-user isolation).
+**Bottom line**: everything that only depends on Sleeper/ESPN (which this
+session proved it can reach once, via your machine) is solid. Everything
+that depends on KTC, FantasyPros, or Reddit is code I'm reasonably confident
+in structurally, but have zero live confirmation on — this sandbox is
+blocked from reaching any of those three sites. Treat those three as "try it
+and tell me what breaks," not "should just work."
 
 ## Setup
-
-Requires Python 3.10+.
 
 ```powershell
 python -m venv .venv
@@ -50,130 +47,157 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-Mocks every Sleeper and ESPN HTTP call — verifies upserts, format handling,
-starter/taxi/IR flags, the 24h player-cache TTL, the 401→"private league"
-error path, and that Sleeper/ESPN player IDs can't collide in the DB.
+47 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
+the private-league auth path, the players table's platform-scoped primary
+key (prevents Sleeper/ESPN ID collisions), cross-platform name matching
+(suffixes, punctuation, ambiguous-duplicate handling), the rank-inefficiency
+engine, performance trend math, waiver/trade filtering, the buy-low/sell-high
+flag logic, KTC/FantasyPros parser strategies against synthetic HTML, Reddit
+sentiment scoring, the devy watchlist, and the web dashboard (auth gating,
+XSS-escaping, missing-env-var fail-fast).
 
-## Sync your leagues
+What tests can't cover: whether the *real* KTC/FantasyPros pages match the
+HTML/JSON shapes the parsers assume, and whether Reddit's API behaves as
+expected with real credentials. Only a live run answers that.
 
-```powershell
-fantasy-assistant sync-all
-```
-
-Pulls the Sleeper player pool (cached 24h) + all three Sleeper leagues, then
-attempts the ESPN league if `config/leagues.yaml` has a season set.
-
-## Verify ESPN sync
-
-Your ESPN league (`509682142`, season 2026) hasn't been tried against the
-live API yet. Run:
+## Everyday commands
 
 ```powershell
-fantasy-assistant sync-espn
-```
+fantasy-assistant sync-all          # Sleeper leagues + players + ESPN league + ESPN rankings
+fantasy-assistant sync-rankings     # just the rank/ADP data (Sleeper + ESPN)
+fantasy-assistant sync-weekly-points 1389373095143284736   # this week's + recent points (needs games played)
+fantasy-assistant sync-ktc --format dynasty                # or --format devy
+fantasy-assistant sync-fantasypros
+fantasy-assistant sync-reddit       # needs REDDIT_CLIENT_ID/SECRET env vars first
 
-Two outcomes:
-
-- **It works** — prints `Synced '<league name>' (509682142) — format: redraft`.
-  Paste that back to me, and if the "Dollars for Devys"-style situation
-  applies here too (i.e. this ESPN league is actually dynasty/devy), tell me
-  and I'll set `format:` in `config/leagues.yaml` like we did for Sleeper.
-- **It fails with an auth error** — the league is private. Do this:
-  1. Copy `config/secrets.yaml.example` to `config/secrets.yaml`
-  2. Log into fantasy.espn.com in your browser
-  3. Open DevTools (F12) → Application tab (Chrome/Edge) or Storage tab
-     (Firefox) → Cookies → `https://fantasy.espn.com`
-  4. Copy the `SWID` cookie value (looks like `{ABC123-...}`) and the
-     `espn_s2` cookie value (a long string) into `config/secrets.yaml`
-  5. Run `fantasy-assistant sync-espn` again
-
-`config/secrets.yaml` is gitignored — cookies never get committed.
-
-## Check standings
-
-```powershell
 fantasy-assistant standings 1389373095143284736
+fantasy-assistant draft-board                                    # Sleeper vs ESPN rank divergence
+fantasy-assistant waiver-targets 1389373095143284736              # available players trending up
+fantasy-assistant trade-targets 1389373095143284736               # rostered players trending up
+fantasy-assistant buy-sell 1389373095143284736                    # the composite engine
+
+fantasy-assistant devy-add "Some College QB" --position QB --college "Ohio State" --notes "watch him"
+fantasy-assistant devy-list
+fantasy-assistant devy-remove 1
 ```
 
-Works for any synced league — Sleeper or ESPN — by league ID.
+Full command list: `fantasy-assistant --help`.
 
-## CLI reference
+## What to try first when you're back
 
-| Command | What it does |
-|---|---|
-| `fantasy-assistant init-db` | Create the SQLite DB and tables |
-| `fantasy-assistant sync-players [--force]` | Refresh the cached Sleeper NFL player pool |
-| `fantasy-assistant sync-league LEAGUE_ID [--format redraft\|dynasty\|devy]` | Sync one Sleeper league |
-| `fantasy-assistant sync-espn` | Sync the ESPN league from config |
-| `fantasy-assistant sync-all` | Sync players + every Sleeper league + ESPN (if configured) |
-| `fantasy-assistant standings LEAGUE_ID` | Print standings for a synced league |
+1. **`fantasy-assistant sync-rankings`** — pulls Sleeper's rank data (proven
+   to work, piggybacks on the already-verified player sync) and ESPN's
+   player pool (the new, unverified endpoint). If ESPN's part fails, paste
+   the error — it'll likely be a wrong field name I can fix once I see the
+   real shape.
+2. **`fantasy-assistant draft-board`** — once #1 works, this should show
+   players where Sleeper and ESPN disagree on rank.
+3. **`fantasy-assistant sync-ktc --format dynasty`** — the riskiest untested
+   piece. If it raises `KTCParseError`, that's expected-possible, not a
+   crisis — the error message itself explains what to send back (or you can
+   view-source the page and paste the relevant `<script>` tag).
+4. **`fantasy-assistant sync-fantasypros`** — same idea, `FantasyProsParseError`
+   if the page structure differs from what's assumed.
+5. **Reddit**: create a script app at https://www.reddit.com/prefs/apps
+   (takes 2 minutes, just needs a Reddit account), set `REDDIT_CLIENT_ID`
+   and `REDDIT_CLIENT_SECRET`, then `fantasy-assistant sync-reddit`.
+6. Once weekly games start (this is being built in the preseason), run
+   `sync-weekly-points` for each league — `waiver-targets`/`trade-targets`/
+   `buy-sell` all need real weekly points data to say anything useful; right
+   now they'll just report "no candidates" because there's no games yet.
 
-Web dashboard (also runnable locally): `DASHBOARD_USER=x DASHBOARD_PASSWORD=y uvicorn fantasy_assistant.web:app --reload`
+## Why X/Twitter was skipped
+
+Per the original scope: X's API is paid and priced for commercial use, not
+a personal side project — not cost-effective here. The documented fallback
+(RSS/Nitter mirrors of beat reporters) was also skipped: Nitter instances
+are unreliable and frequently down, which would make that data source
+flaky in a way that's worse than just not having it. Reddit is the sentiment
+source; if this becomes a real gap in practice, revisit then rather than
+building against infrastructure likely to break on its own.
+
+## ESPN private league
+
+Cookies are set as Railway env vars `ESPN_SWID`/`ESPN_S2` (confirmed
+working). For local runs, copy `config/secrets.yaml.example` to
+`config/secrets.yaml` and put them there instead — never commit that file
+(it's gitignored).
 
 ## Deploy to Railway
 
-This gives you (and whoever you share the URL with) a web dashboard —
-standings for every league plus a "Sync Now" button — instead of a terminal.
-I can't do this part for you (it needs your Railway account), but it's a
-handful of clicks:
+Already done for the core app — this is for reference if you ever need to
+redo it, or want to point a fresh Railway project at this repo.
 
-1. **Go to [railway.app](https://railway.app)** and sign in (GitHub login is
-   easiest since the repo's already there).
-2. **New Project → Deploy from GitHub repo** → pick `joeyconger/Fantasy-Assistant`
-   → select the `claude/fantasy-football-tool-xaf7ux` branch (or `main`,
-   once this is merged). Railway will detect `railway.json` and use its
-   build/start commands automatically — no config needed there.
-3. **Add a Volume** (Railway dashboard → your service → Settings → Volumes →
-   New Volume). Mount path: `/data`. This is what makes your synced data
-   survive redeploys instead of resetting every time.
-4. **Set environment variables** (Settings → Variables):
-   | Variable | Value |
-   |---|---|
-   | `DASHBOARD_USER` | pick a username |
-   | `DASHBOARD_PASSWORD` | pick a real password — this is the only thing stopping strangers from seeing your league data |
-   | `DATABASE_PATH` | `/data/fantasy_assistant.db` |
-   | `ESPN_SWID` | only if your ESPN league turned out to be private (see above) |
-   | `ESPN_S2` | same |
-5. **Generate a public URL**: Settings → Networking → Generate Domain.
-6. Deploy should kick off automatically after step 2 (and again any time you
-   push to that branch). Once it's up, visit the URL, log in with the
-   username/password from step 4, and click **Sync Now**.
+1. **railway.app** → sign in → **New Project → Deploy from GitHub repo** →
+   `joeyconger/Fantasy-Assistant`, the working branch.
+2. **Volume** (Settings → Volumes → New Volume), mount path `/data`.
+3. **Variables**: `DASHBOARD_USER`, `DASHBOARD_PASSWORD`, `DATABASE_PATH=/data/fantasy_assistant.db`,
+   `ESPN_SWID`, `ESPN_S2`, and (once you set them up) `REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET`.
+4. **Networking → Generate Domain**.
 
-Paste back the deploy logs if anything fails, or the URL once it's working
-and I'll sanity-check it.
+Web dashboard pages: `/` (standings + Sync Now), `/draft-board`,
+`/waivers`, `/buy-sell`, `/devy`. All behind the shared login. The devy
+watchlist is view-only on the web — add/remove prospects via the CLI
+(`devy-add`/`devy-remove`) since that's a local/one-time action, not
+something that needed a web form yet.
 
-## Data
+## Data model notes
 
-Everything is cached in SQLite. Locally that's `data/fantasy_assistant.db`
-(gitignored). Delete it any time to start fresh; `init-db` recreates the
-schema. On Railway, set `DATABASE_PATH` to a path inside your mounted Volume
-so it isn't wiped on redeploy (see above).
+- **Cross-platform player identity**: Sleeper, ESPN, KTC, and FantasyPros
+  all use their own independent player IDs with no shared key. Matching is
+  done by normalized name + position (`platforms/matching.py`) — lowercased,
+  punctuation stripped, suffixes like Jr./III removed. An ambiguous match
+  (e.g. two same-named players at the same position on one side) is left
+  unmatched rather than guessed, since a wrong pairing would silently
+  corrupt every downstream feature.
+- **KTC/FantasyPros storage**: since they have no player ID at all, their
+  values are keyed directly by (normalized name, position) in their own
+  tables (`market_values`, `expert_rankings`) rather than joined into the
+  `players` table.
+- **Value/rank deltas over time**: each sync rolls the previous values into
+  a `_prior` table before overwriting, so "value 7 days ago" is really
+  "value as of your last sync" — sync however often you want; the delta
+  reflects whatever gap that is.
+- **Not available from any source used here**: snap share, target share,
+  red zone usage. Sleeper and ESPN's public APIs don't expose these. Only
+  fantasy points scored (from Sleeper matchups) powers the performance-trend
+  signal. Adding snap/target/RZ data would mean integrating an additional
+  stats source (e.g. nflverse/nflfastR) — not in the original source list,
+  flagged here as a real gap rather than silently ignored.
+- **Roster construction needs / scoring-weighted best-player-available**:
+  the draft board compares raw rank/ADP, not full season point projections
+  weighted by your league's specific scoring settings — that would need a
+  real projections data source this doesn't have. What's built is the
+  "market inefficiency" half of the draft assistant ask, not the full
+  scoring-aware BPA half.
 
 ## Project layout
 
 ```
-railway.json               # Railway build/start command config
-.env.example                # env vars the web dashboard needs (copy to .env for local testing)
+railway.json                 # Railway build/start command config
+.env.example                  # env vars the web dashboard/CLI can use
 config/
-  leagues.yaml             # your league IDs, formats, ESPN season
-  secrets.yaml.example      # template for ESPN cookies (copy to secrets.yaml) — local use only
+  leagues.yaml               # league IDs, formats, ESPN season
+  secrets.yaml.example        # template for ESPN cookies (local use only)
 src/fantasy_assistant/
-  cli.py                    # command-line entrypoints
-  web.py                     # FastAPI dashboard (auth, standings view, sync trigger)
-  config.py                 # loads config/leagues.yaml (+ secrets.yaml / env var overrides)
-  db.py                     # SQLite connection/init (DATABASE_PATH env var override)
-  schema.sql                 # table definitions (players keyed by player_id+platform,
-                              # since Sleeper and ESPN assign independent IDs)
+  cli.py                      # all CLI commands
+  web.py                       # FastAPI dashboard
+  devy.py                       # devy watchlist CRUD
+  config.py                   # config/leagues.yaml + secrets.yaml/env loading
+  db.py                        # SQLite connection/init
+  schema.sql                    # all table definitions, heavily commented
+  analysis/                   # cross-cutting logic (not platform-specific)
+    draft_board.py             # Sleeper vs ESPN rank inefficiency
+    performance_trend.py        # recent vs season points
+    waiver_targets.py            # available/rostered players trending up
+    buy_low_sell_high.py          # the composite engine
+    sentiment.py                   # lexicon-based Reddit scoring
   platforms/
-    sleeper/
-      client.py             # thin Sleeper API wrapper
-      sync.py                # fetch + upsert logic
-    espn/
-      client.py              # thin ESPN API wrapper (public + cookie auth)
-      constants.py           # ESPN's proTeamId/positionId/lineupSlotId maps
-      sync.py                 # fetch + upsert logic
-tests/
-  test_sleeper_sync.py      # sync logic tested against mocked API responses
-  test_espn_sync.py          # same, for ESPN, incl. private-league auth path
-  test_web.py                 # dashboard auth gating + HTML-escaping tests
+    matching.py                 # cross-platform name matching (shared)
+    sleeper/                    # client, sync, weekly_points
+    espn/                       # client, sync, rankings, constants
+    ktc/                        # client (UNVERIFIED), sync
+    fantasypros/                # client (UNVERIFIED), sync
+    reddit/                     # client (UNTESTED - needs credentials), sync
+tests/                        # 47 tests, see "Run the tests" above
 ```

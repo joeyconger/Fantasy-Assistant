@@ -21,9 +21,6 @@ sleeper:
 espn:
   league_id: "509682142"
   season: 2026
-  private: null     # unknown — sync-espn will tell you: it'll fail with a clear
-                     # message if cookies are needed. If so, copy
-                     # config/secrets.yaml.example to config/secrets.yaml and see
-                     # the README for how to grab SWID/espn_s2 from your browser.
-  format: null      # redraft | dynasty | devy — ESPN gives no auto-detect signal,
-                     # unlike Sleeper, so set this once you know
+  private: true     # confirmed — cookies live in Railway env vars (ESPN_SWID/ESPN_S2),
+                     # not here (config/secrets.yaml is for local runs only)
+  format: redraft
