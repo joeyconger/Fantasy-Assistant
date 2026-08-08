@@ -13,10 +13,11 @@ deployed (e.g. on Railway) as a small shared web dashboard.
 | ESPN league sync (rosters, standings) | ✅ **Verified live** — private league, cookies working |
 | Web dashboard + Railway deploy | ✅ **Deployed and live**, shared login |
 | Sleeper rank data (`search_rank`) | ✅ Verified live (part of the already-proven player sync) |
-| ESPN full player-pool rankings/ADP | ⚠️ **Built, unit-tested, NOT run live** — new endpoint, different from the proven league endpoint |
-| Draft board (rank inefficiency finder) | ⚠️ Logic verified correct via synthetic data + unit tests; depends on the ESPN piece above |
+| ESPN full player-pool rankings/ADP | ✅ **Verified live** — 2918 players synced, correct rank/ADP order (Gibbs #1, Bijan #2, Puka #3 — matches real ADP). |
+| — 1QB vs Superflex split | ✅ **Verified live** — ESPN's payload genuinely has a distinct Superflex rank type (unconfirmed until tested; turned out to exist). Confirmed meaningful, not noise: nearly every top-25 Superflex divergence is a QB valued much higher by ESPN in that mode, exactly the expected real-world pattern. |
+| Draft board (rank inefficiency finder) | ✅ **Verified live**, both qb_modes, real divergent players in each. |
 | Weekly performance trend (Sleeper matchups) | ⚠️ Built + tested; no real games played yet this season to sync (it's August) |
-| Waiver/trade target identifier | ⚠️ Built + tested; same real-data caveat as above |
+| Waiver/trade target identifier | ✅ Platform-awareness bug fixed and verified (Sleeper and ESPN both); still needs real weekly-points data to say anything — no games played yet this season |
 | KeepTradeCut (KTC) scraper | ✅ **Verified live** — dynasty and devy, both 1QB and Superflex confirmed with real player data (Ja'Marr Chase, Bijan Robinson, Jeremiah Smith, Arch Manning, etc., sane values). Fixed a real bug found during verification: KTC nests both qb_modes per-record (`oneQBValues`/`superflexValues`), not flat top-level fields — the original `?format=2` URL guess was wrong and unnecessary, one page load has both. |
 | — 1QB vs Superflex split | ✅ Verified — auto-detected from each league's roster settings (2+ QB slots or a Superflex/OP slot → superflex) for buy-sell; explicit `--qb-mode` flag for `sync-ktc`/`devy-list` since those aren't tied to one league. |
 | FantasyPros scraper | ✅ **Verified live** — 511 redraft consensus rankings, correct order (Gibbs #1, Bijan #2, Chase #3 — matches actual current consensus), real names/positions/teams. Worked on the first real run, no fix needed. |
@@ -25,11 +26,10 @@ deployed (e.g. on Railway) as a small shared web dashboard.
 | Buy-low/sell-high engine | ⚠️ Combines the above signals correctly (verified via synthetic data + now real KTC + FantasyPros data). Still needs weekly-points data to say anything for a given league — no games played yet this season. |
 | Devy watchlist | ✅ Fully built and tested (it's just a manual list — no external dependency), and now cross-references real KTC devy values |
 
-**Bottom line**: Sleeper, ESPN league sync, KTC, and FantasyPros are all
-verified live now — every data source except Reddit (out of scope) and
-X/Twitter (skipped) actually works against the real internet. What's left
-unverified is the ESPN player-pool/rankings endpoint (different from the
-proven ESPN league-sync endpoint) and real weekly-points data, which just
+**Bottom line**: every data source except Reddit (out of scope) and
+X/Twitter (skipped) is verified live — Sleeper, ESPN (league sync +
+player-pool rankings, both qb_modes), KTC, and FantasyPros. Phase A
+(functional gaps) is complete. What's left is real weekly-points data, which just
 needs the season to start.
 
 ## Setup
@@ -92,25 +92,20 @@ you actually need (e.g. `1qb` for Weekend Warriors, `superflex` only if
 Dollars for Devys turns out to be superflex — check by running `buy-sell`
 on it and seeing which mode it reports).
 
-## What to try first when you're back
+## Phase A: functional gaps — complete
 
-1. ~~`fantasy-assistant sync-ktc`~~ — **done.** Verified live, dynasty +
-   devy, both qb_modes, with a real bug found and fixed along the way.
-2. ~~`fantasy-assistant sync-fantasypros`~~ — **done.** Verified live on the
-   first try, 511 correctly-ordered redraft rankings.
-3. **`fantasy-assistant sync-rankings`** — next up. Pulls Sleeper's rank data
-   (proven to work, piggybacks on the already-verified player sync) and
-   ESPN's player pool (the new, unverified endpoint). If ESPN's part fails,
-   paste the error — it'll likely be a wrong field name, same pattern as
-   the KTC fix.
-4. **`fantasy-assistant draft-board`** — once #3 works, this should show
-   players where Sleeper and ESPN disagree on rank.
-5. ~~Reddit~~ — **out of scope**, not happening. Buy-low/sell-high runs fine
-   without it (sentiment is one optional input, not required).
-6. Once weekly games start (this is being built in the preseason), run
-   `sync-weekly-points` for each league — `waiver-targets`/`trade-targets`/
-   `buy-sell` all need real weekly points data to say anything useful; right
-   now they'll just report "no candidates" because there's no games yet.
+All done and verified live: waiver/trade/buy-sell platform-awareness bug
+fixed, KTC (dynasty + devy, both qb_modes), FantasyPros, and ESPN
+player-pool rankings (both qb_modes, including confirming ESPN genuinely
+has distinct Superflex data). ~~Reddit~~ is out of scope by decision.
+
+**What's left, and it's just waiting on the season:**
+
+Once weekly games start, run `sync-weekly-points` for each league —
+`waiver-targets`/`trade-targets`/`buy-sell` all need real weekly points
+data to say anything useful; right now they'll just report "no candidates"
+because there's no games yet. Nothing to fix, just nothing to show until
+then.
 
 ## Why X/Twitter was skipped
 
