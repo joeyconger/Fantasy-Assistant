@@ -352,3 +352,106 @@ def test_unsynced_league_raises_clear_error():
 
     with pytest.raises(ValueError, match="hasn't been synced"):
         top_waiver_adds(conn, "NONEXISTENT")
+
+
+# ---- personalization (my_owner_id) ----
+
+
+def test_top_trade_targets_excludes_my_own_roster_when_owner_id_given(conn):
+    from fantasy_assistant.analysis.waiver_targets import top_trade_targets
+
+    _add_league(conn)
+    conn.execute("INSERT INTO rosters (league_id, roster_id, owner_id) VALUES ('L1', '1', 'me')")
+    conn.execute("INSERT INTO rosters (league_id, roster_id, owner_id) VALUES ('L1', '2', 'rival')")
+    _add_player(conn, "mine", "sleeper", "My Guy", "WR")
+    _add_player(conn, "theirs", "sleeper", "Rival Guy", "WR")
+    conn.execute("INSERT INTO roster_players (league_id, roster_id, player_id) VALUES ('L1', '1', 'mine')")
+    conn.execute("INSERT INTO roster_players (league_id, roster_id, player_id) VALUES ('L1', '2', 'theirs')")
+    for week, pts in [(1, 5.0), (2, 5.0), (3, 20.0), (4, 20.0), (5, 20.0)]:
+        for pid in ("mine", "theirs"):
+            conn.execute(
+                "INSERT INTO player_weekly_points (league_id, player_id, week, points, fetched_at) VALUES ('L1', ?, ?, ?, ?)",
+                (pid, week, pts, NOW),
+            )
+    conn.commit()
+
+    without_owner = top_trade_targets(conn, "L1", min_trend=2.0)
+    with_owner = top_trade_targets(conn, "L1", min_trend=2.0, my_owner_id="me")
+
+    ids_without = {t["player_id"] for t in without_owner}
+    ids_with = {t["player_id"] for t in with_owner}
+    assert ids_without == {"mine", "theirs"}  # no personalization: both show up
+    assert ids_with == {"theirs"}  # personalized: my own player excluded
+
+
+def test_top_waiver_adds_flags_fills_need(conn):
+    from fantasy_assistant.analysis.waiver_targets import top_waiver_adds
+
+    _add_league(conn)
+    conn.execute("INSERT INTO rosters (league_id, roster_id, owner_id) VALUES ('L1', '1', 'me')")
+    # My roster has one weak RB; league has strong RBs elsewhere.
+    _add_player(conn, "my_rb", "sleeper", "My RB", "RB")
+    _add_player(conn, "rival_rb", "sleeper", "Rival RB", "RB")
+    conn.execute("INSERT INTO roster_players (league_id, roster_id, player_id) VALUES ('L1', '1', 'my_rb')")
+    conn.execute("INSERT INTO roster_players (league_id, roster_id, player_id) VALUES ('L1', '2', 'rival_rb')")
+    conn.execute("INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES ('my_rb','sleeper','sleeper_search_rank',200,?)", (NOW,))
+    conn.execute("INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES ('rival_rb','sleeper','sleeper_search_rank',5,?)", (NOW,))
+
+    _add_player(conn, "free_rb", "sleeper", "Free RB", "RB")
+    _add_player(conn, "free_wr", "sleeper", "Free WR", "WR")
+    for pid in ("free_rb", "free_wr"):
+        for week, pts in [(1, 5.0), (2, 10.0)]:
+            conn.execute(
+                "INSERT INTO player_weekly_points (league_id, player_id, week, points, fetched_at) VALUES ('L1', ?, ?, ?, ?)",
+                (pid, week, pts, NOW),
+            )
+    conn.commit()
+
+    results = top_waiver_adds(conn, "L1", my_owner_id="me")
+    rb_result = next(r for r in results if r["player_id"] == "free_rb")
+    wr_result = next(r for r in results if r["player_id"] == "free_wr")
+    assert rb_result["fills_need"] is True  # RB is my weak position
+    assert wr_result["fills_need"] is False  # no WR data at all — not flagged as a need
+
+
+def test_fills_need_is_none_without_owner_id(conn):
+    from fantasy_assistant.analysis.waiver_targets import top_waiver_adds
+
+    _add_league(conn)
+    _add_player(conn, "free_rb", "sleeper", "Free RB", "RB")
+    for week, pts in [(1, 5.0), (2, 10.0)]:
+        conn.execute(
+            "INSERT INTO player_weekly_points (league_id, player_id, week, points, fetched_at) VALUES ('L1', 'free_rb', ?, ?, ?)",
+            (week, pts, NOW),
+        )
+    conn.commit()
+
+    results = top_waiver_adds(conn, "L1")
+    assert results[0]["fills_need"] is None
+
+
+def test_buy_low_sell_high_tags_ownership(conn):
+    from fantasy_assistant.analysis.buy_low_sell_high import find_buy_low_sell_high
+
+    _add_league(conn, format_="dynasty")
+    conn.execute("INSERT INTO rosters (league_id, roster_id, owner_id) VALUES ('L1', '1', 'me')")
+    conn.execute("INSERT INTO rosters (league_id, roster_id, owner_id) VALUES ('L1', '2', 'rival')")
+    _add_player(conn, "mine", "sleeper", "My Trending Guy", "WR")
+    _add_player(conn, "theirs", "sleeper", "Their Trending Guy", "WR")
+    conn.execute("INSERT INTO roster_players (league_id, roster_id, player_id) VALUES ('L1', '1', 'mine')")
+    conn.execute("INSERT INTO roster_players (league_id, roster_id, player_id) VALUES ('L1', '2', 'theirs')")
+    for pid in ("mine", "theirs"):
+        for week, pts in [(1, 5.0), (2, 5.0), (3, 20.0), (4, 20.0)]:
+            conn.execute(
+                "INSERT INTO player_weekly_points (league_id, player_id, week, points, fetched_at) VALUES ('L1', ?, ?, ?, ?)",
+                (pid, week, pts, NOW),
+            )
+    conn.commit()
+
+    results = find_buy_low_sell_high(conn, "L1", "dynasty", my_owner_id="me")
+    by_id = {r["player_id"]: r for r in results}
+    assert by_id["mine"]["owned_by_me"] is True
+    assert by_id["theirs"]["owned_by_me"] is False
+
+    results_no_owner = find_buy_low_sell_high(conn, "L1", "dynasty")
+    assert all(r["owned_by_me"] is None for r in results_no_owner)

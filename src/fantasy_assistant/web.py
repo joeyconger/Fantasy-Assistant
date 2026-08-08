@@ -22,6 +22,7 @@ from . import db as db_module
 from . import devy as devy_module
 from .analysis.buy_low_sell_high import find_buy_low_sell_high
 from .analysis.draft_board import find_rank_inefficiencies
+from .analysis.trade_analyzer import TradeAnalyzerError, analyze_trade
 from .analysis.waiver_targets import top_trade_targets, top_waiver_adds
 from .platforms.espn.client import ESPNAPIError, ESPNAuthRequired, ESPNClient
 from .platforms.espn.rankings import sync_player_pool as espn_sync_player_pool
@@ -59,6 +60,20 @@ def health():
     return {"status": "ok"}
 
 
+def _my_owner_id_for(league_id: str) -> str | None:
+    """Looks up my_owner_id for a league from config/leagues.yaml, if configured."""
+    try:
+        app_config = config_module.load_config()
+    except FileNotFoundError:
+        return None
+    for league_cfg in app_config.sleeper_leagues:
+        if league_cfg.league_id == league_id:
+            return league_cfg.my_owner_id
+    if app_config.espn_league and app_config.espn_league.league_id == league_id:
+        return app_config.espn_league.my_owner_id
+    return None
+
+
 def _page(title: str, body: str, nav_extra: str = "") -> str:
     return f"""<!doctype html>
 <html>
@@ -86,6 +101,7 @@ def _page(title: str, body: str, nav_extra: str = "") -> str:
     <a href="/draft-board">Draft Board</a>
     <a href="/waivers">Waivers/Trades</a>
     <a href="/buy-sell">Buy/Sell</a>
+    <a href="/trade-analyzer">Trade Analyzer</a>
     <a href="/devy">Devy Watchlist</a>
   </nav>
   {nav_extra}
@@ -215,23 +231,31 @@ def waivers_page(_user: str = Depends(require_auth), league_id: str | None = Que
         if not league_id:
             return _page("Waivers/Trades", selector)
 
-        adds = top_waiver_adds(conn, league_id)
-        targets = top_trade_targets(conn, league_id)
+        my_owner_id = _my_owner_id_for(league_id)
+        adds = top_waiver_adds(conn, league_id, my_owner_id=my_owner_id)
+        targets = top_trade_targets(conn, league_id, my_owner_id=my_owner_id)
     finally:
         conn.close()
+
+    personalization_note = (
+        ""
+        if my_owner_id
+        else "<p class='empty'>Set my_owner_id in config/leagues.yaml to see which candidates fill your roster's needs.</p>"
+    )
 
     def table(items, extra_col=None):
         if not items:
             return "<p class='empty'>No candidates yet — run sync-weekly-points and sync-rankings.</p>"
-        header = "<th>Player</th><th>Pos</th><th>Team</th><th>Recent Avg</th><th>Trend</th><th>Rank</th>"
+        header = "<th>Player</th><th>Pos</th><th>Team</th><th>Recent Avg</th><th>Trend</th><th>Rank</th><th>Need</th>"
         if extra_col:
             header += f"<th>{extra_col}</th>"
         rows = ""
         for r in items:
+            need_badge = "<strong>FILLS NEED</strong>" if r.get("fills_need") else ""
             row = (
                 f"<td>{html.escape(r['name'])}</td><td>{html.escape(r['position'] or '')}</td>"
                 f"<td>{html.escape(r['team'] or '')}</td><td>{r['recent_avg']}</td><td>{r['trend']:+}</td>"
-                f"<td>{r['rank'] if r['rank'] is not None else '-'}</td>"
+                f"<td>{r['rank'] if r['rank'] is not None else '-'}</td><td>{need_badge}</td>"
             )
             if extra_col:
                 row += f"<td>{html.escape(r.get('owned_by', ''))}</td>"
@@ -240,6 +264,7 @@ def waivers_page(_user: str = Depends(require_auth), league_id: str | None = Que
 
     body = f"""
     {selector}
+    {personalization_note}
     <h2>Waiver Adds (available, trending up)</h2>
     {table(adds)}
     <h2>Trade Targets (rostered, trending up)</h2>
@@ -261,13 +286,20 @@ def buy_sell_page(_user: str = Depends(require_auth), league_id: str | None = Qu
         if not league_id:
             return _page("Buy/Sell", selector)
 
+        my_owner_id = _my_owner_id_for(league_id)
         league = conn.execute("SELECT format FROM leagues WHERE league_id = ?", (league_id,)).fetchone()
-        results = find_buy_low_sell_high(conn, league_id, league["format"] if league else "redraft")
+        results = find_buy_low_sell_high(conn, league_id, league["format"] if league else "redraft", my_owner_id=my_owner_id)
     finally:
         conn.close()
 
+    personalization_note = (
+        ""
+        if my_owner_id
+        else "<p class='empty'>Set my_owner_id in config/leagues.yaml to see which of these are actually on your roster.</p>"
+    )
+
     if not results:
-        body = "<p class='empty'>No flags yet — needs sync-weekly-points plus sync-ktc/sync-fantasypros/sync-reddit.</p>"
+        body = f"{personalization_note}<p class='empty'>No flags yet — needs sync-weekly-points plus sync-ktc/sync-fantasypros/sync-reddit.</p>"
     else:
         cards = []
         for r in results:
@@ -276,18 +308,116 @@ def buy_sell_page(_user: str = Depends(require_auth), league_id: str | None = Qu
                 f'{f.upper().replace("_", "-")}: {html.escape(reason)}</div>'
                 for f, reason in r["flags"]
             )
+            ownership = ""
+            if r.get("owned_by_me") is True:
+                ownership = " <span class='tag'>ON YOUR ROSTER</span>"
+            elif r.get("owned_by_me") is False:
+                ownership = " <span class='tag'>trade target</span>"
             cards.append(f"""
             <section>
-              <h3>{html.escape(r['name'])} ({html.escape(r['position'] or '')}, {html.escape(r['team'] or '')})</h3>
+              <h3>{html.escape(r['name'])} ({html.escape(r['position'] or '')}, {html.escape(r['team'] or '')}){ownership}</h3>
               <p>Recent avg: {r['recent_avg']} · Season avg: {r['season_avg']} · Trend: {r['perf_trend']:+}
               {f" · Market delta: {r['market_delta']:+}" if r['market_delta'] is not None else ""}
               {f" · Sentiment: {r['sentiment']:+}" if r['sentiment'] is not None else ""}</p>
               {flag_html}
             </section>
             """)
-        body = "".join(cards)
+        body = personalization_note + "".join(cards)
 
     return _page("Buy/Sell", f"{selector}<h2>Buy-Low / Sell-High</h2>{body}")
+
+
+@app.get("/trade-analyzer", response_class=HTMLResponse)
+def trade_analyzer_page(
+    _user: str = Depends(require_auth),
+    league_id: str | None = Query(default=None),
+    side_a: str = Query(default=""),
+    side_b: str = Query(default=""),
+):
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+    try:
+        if not league_id:
+            row = conn.execute("SELECT league_id FROM leagues ORDER BY platform, name LIMIT 1").fetchone()
+            league_id = row["league_id"] if row else None
+
+        selector = _league_select(conn, league_id, "/trade-analyzer")
+        if not league_id:
+            return _page("Trade Analyzer", selector)
+
+        result = None
+        error = None
+        side_a_names = [n.strip() for n in side_a.split("\n") if n.strip()]
+        side_b_names = [n.strip() for n in side_b.split("\n") if n.strip()]
+        if side_a_names and side_b_names:
+            try:
+                result = analyze_trade(conn, league_id, side_a_names, side_b_names)
+            except TradeAnalyzerError as exc:
+                error = str(exc)
+    finally:
+        conn.close()
+
+    form = f"""
+    <form method="get" action="/trade-analyzer">
+      <input type="hidden" name="league_id" value="{html.escape(league_id)}">
+      <div style="display:flex; gap:1rem; flex-wrap:wrap;">
+        <div style="flex:1; min-width:220px;">
+          <label>Side A sends (one player per line)</label><br>
+          <textarea name="side_a" rows="5" style="width:100%;">{html.escape(side_a)}</textarea>
+        </div>
+        <div style="flex:1; min-width:220px;">
+          <label>Side B sends (one player per line)</label><br>
+          <textarea name="side_b" rows="5" style="width:100%;">{html.escape(side_b)}</textarea>
+        </div>
+      </div>
+      <button type="submit" style="margin-top:0.75rem;">Analyze</button>
+    </form>
+    """
+
+    result_html = ""
+    if error:
+        result_html = f"<div class='errors'>{html.escape(error)}</div>"
+    elif result:
+        metric = result["metric"]
+
+        def side_table(label, players, total):
+            if not players:
+                return f"<p class='empty'>Side {label}: nothing resolved.</p>"
+            rows = "".join(
+                f"<tr><td>{html.escape(p['full_name'])}</td><td>{html.escape(p['position'] or '')}</td><td>{p['metric']}</td></tr>"
+                for p in players
+            )
+            return f"""<h4>Side {label} sends</h4>
+            <table><thead><tr><th>Player</th><th>Pos</th><th>{metric.title()}</th></tr></thead>
+            <tbody>{rows}</tbody></table>
+            <p>Total: {total}</p>"""
+
+        unresolved_html = ""
+        if result["unresolved"]:
+            unresolved_html = (
+                "<p class='empty'>Couldn't find data for: "
+                + html.escape(", ".join(result["unresolved"]))
+                + " (check spelling, or sync-ktc/sync-fantasypros first)</p>"
+            )
+
+        verdict = (
+            "Dead even."
+            if result["winner"] == "even"
+            else f"Side {result['winner']} comes out ahead by {result['margin']} {metric}."
+        )
+
+        result_html = f"""
+        <p>League format: {html.escape(result['league_format'])}{f" ({html.escape(result['qb_mode'])})" if result['qb_mode'] else ""}
+        · Metric: {metric} ({'higher is better' if result['higher_is_better'] else 'lower is better'})</p>
+        <div style="display:flex; gap:2rem; flex-wrap:wrap;">
+          <div>{side_table('A', result['side_a'], result['total_a'])}</div>
+          <div>{side_table('B', result['side_b'], result['total_b'])}</div>
+        </div>
+        {unresolved_html}
+        <h3>{verdict}</h3>
+        """
+
+    return _page("Trade Analyzer", f"{selector}<h2>Trade Analyzer</h2>{form}{result_html}")
 
 
 @app.get("/devy", response_class=HTMLResponse)

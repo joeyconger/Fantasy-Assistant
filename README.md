@@ -1,9 +1,10 @@
 # Fantasy Assistant
 
 Decision-support tool for Sleeper and ESPN fantasy football leagues — league
-sync, a draft-value inefficiency finder, waiver/trade targeting, a buy-low/
-sell-high engine, and devy prospect tracking. Usable as a local CLI, or
-deployed (e.g. on Railway) as a small shared web dashboard.
+sync, a draft-value inefficiency finder, waiver/trade targeting personalized
+to your roster's actual needs, a buy-low/sell-high engine, a trade analyzer,
+and devy prospect tracking. Usable as a local CLI, or deployed (e.g. on
+Railway) as a small shared web dashboard.
 
 ## Status at a glance
 
@@ -72,10 +73,12 @@ fantasy-assistant sync-fantasypros
 fantasy-assistant sync-reddit       # needs REDDIT_CLIENT_ID/SECRET env vars first
 
 fantasy-assistant standings 1389373095143284736
+fantasy-assistant owners 1389373095143284736                      # find your owner_id for personalization
 fantasy-assistant draft-board                                    # Sleeper vs ESPN rank divergence
 fantasy-assistant waiver-targets 1389373095143284736              # available players trending up
 fantasy-assistant trade-targets 1389373095143284736               # rostered players trending up
 fantasy-assistant buy-sell 1389373095143284736                    # the composite engine (auto-detects 1QB/Superflex)
+fantasy-assistant trade-analyze 1315737573154390016 --side-a "Player One" --side-b "Player Two" --side-b "Player Three"
 
 fantasy-assistant devy-add "Some College QB" --position QB --college "Ohio State" --notes "watch him"
 fantasy-assistant devy-list --qb-mode 1qb    # or --qb-mode superflex
@@ -83,6 +86,22 @@ fantasy-assistant devy-remove 1
 ```
 
 Full command list: `fantasy-assistant --help`.
+
+**Personalization**: waiver-targets/trade-targets/buy-sell are league-wide
+by default (useful, but you have to judge fit yourself). Run
+`fantasy-assistant owners LEAGUE_ID` to find your `owner_id`, set it as
+`my_owner_id` in `config/leagues.yaml` for that league, and: trade-targets
+excludes players you already own, both commands tag candidates that fill
+one of your roster's actual weak positions (`analysis/roster_needs.py` —
+compares your average rank per position against the league average), and
+buy-sell tags whether each flagged player is on your roster (an actual
+sell-high decision) or someone else's (a trade-for target). Leave it unset
+and everything still works exactly as before, unpersonalized.
+
+**Trade analyzer**: evaluates a proposed trade using KTC value (dynasty/devy,
+auto-detects 1QB/Superflex from the league) or FantasyPros rank (redraft).
+Player names not found in the synced data are reported as unresolved, not
+silently dropped or valued at zero.
 
 **1QB vs Superflex**: `buy-sell` auto-detects which one your league actually
 is from its synced roster settings (2+ QB slots, or a Superflex/OP slot) —
@@ -192,13 +211,16 @@ src/fantasy_assistant/
     performance_trend.py        # recent vs season points
     waiver_targets.py            # available/rostered players trending up
     buy_low_sell_high.py          # the composite engine
-    sentiment.py                   # lexicon-based Reddit scoring
+    trade_analyzer.py              # two-sided trade value comparison
+    roster_needs.py                 # positional need-gap vs league average
+    roster_format.py                 # 1QB vs Superflex detection (shared)
+    sentiment.py                      # lexicon-based Reddit scoring
   platforms/
     matching.py                 # cross-platform name matching (shared)
     sleeper/                    # client, sync, weekly_points
     espn/                       # client, sync, rankings, constants
-    ktc/                        # client (UNVERIFIED), sync
-    fantasypros/                # client (UNVERIFIED), sync
+    ktc/                        # client (verified live), sync
+    fantasypros/                # client (verified live), sync
     reddit/                     # client (UNTESTED - needs credentials), sync
-tests/                        # 47 tests, see "Run the tests" above
+tests/                        # 78 tests, see "Run the tests" above
 ```

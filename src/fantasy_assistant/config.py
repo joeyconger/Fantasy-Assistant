@@ -17,6 +17,7 @@ DEFAULT_SECRETS_PATH = REPO_ROOT / "config" / "secrets.yaml"
 class SleeperLeagueConfig:
     league_id: str
     format: str | None = None  # redraft | dynasty | devy | None (auto-detect)
+    my_owner_id: str | None = None  # your owner_id in this league — run `fantasy-assistant owners LEAGUE_ID` to find it
 
 
 @dataclass
@@ -27,6 +28,7 @@ class EspnLeagueConfig:
     format: str | None = None  # redraft | dynasty | devy — ESPN gives no auto-detect signal
     swid: str | None = None
     espn_s2: str | None = None
+    my_owner_id: str | None = None
 
 
 @dataclass
@@ -44,7 +46,11 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH, secrets_path: Path = DEFAULT_S
     raw = yaml.safe_load(path.read_text()) or {}
 
     sleeper_leagues = [
-        SleeperLeagueConfig(league_id=str(entry["league_id"]), format=entry.get("format"))
+        SleeperLeagueConfig(
+            league_id=str(entry["league_id"]),
+            format=entry.get("format"),
+            my_owner_id=str(entry["my_owner_id"]) if entry.get("my_owner_id") else None,
+        )
         for entry in raw.get("sleeper", []) or []
     ]
 
@@ -66,6 +72,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH, secrets_path: Path = DEFAULT_S
             format=espn_raw.get("format"),
             swid=swid,
             espn_s2=espn_s2,
+            my_owner_id=str(espn_raw["my_owner_id"]) if espn_raw.get("my_owner_id") else None,
         )
 
     return AppConfig(sleeper_leagues=sleeper_leagues, espn_league=espn_league)

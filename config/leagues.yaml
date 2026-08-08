@@ -9,14 +9,24 @@
 #   - Sleeper has no concept of "devy." If one of your dynasty leagues is the
 #     one where you stash college prospects, set format: devy explicitly here
 #     so the rest of the tool (buy-low/sell-high, devy tracking) treats it right.
+#
+# my_owner_id: optional. Personalizes waiver-targets/buy-sell to flag whether
+#   a candidate fills one of YOUR roster's weak positions, instead of just
+#   showing league-wide trending players. Find yours by running
+#   `fantasy-assistant owners LEAGUE_ID` after syncing that league — it lists
+#   every owner_id next to their display name/team name so you can tell which
+#   one is you. Leave unset and everything still works, just not personalized.
 
 sleeper:
   - league_id: "1389373095143284736"
     format: redraft   # BMFS
+    my_owner_id: null
   - league_id: "1315737573154390016"
     format: dynasty   # Weekend Warriors
+    my_owner_id: null
   - league_id: "1313961246109761536"
     format: devy      # Dollars for Devys
+    my_owner_id: null
 
 espn:
   league_id: "509682142"
@@ -24,3 +34,4 @@ espn:
   private: true     # confirmed — cookies live in Railway env vars (ESPN_SWID/ESPN_S2),
                      # not here (config/secrets.yaml is for local runs only)
   format: redraft
+  my_owner_id: null

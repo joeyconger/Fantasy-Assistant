@@ -77,7 +77,9 @@ def _sentiment_map(conn: sqlite3.Connection) -> dict[str, float]:
     return {row["normalized_name"]: row["net_score"] for row in rows}
 
 
-def find_buy_low_sell_high(conn: sqlite3.Connection, league_id: str, league_format: str, limit: int = 25) -> list[dict]:
+def find_buy_low_sell_high(
+    conn: sqlite3.Connection, league_id: str, league_format: str, limit: int = 25, my_owner_id: str | None = None
+) -> list[dict]:
     trends = compute_trends(conn, league_id)
     sentiment = _sentiment_map(conn)
 
@@ -91,12 +93,19 @@ def find_buy_low_sell_high(conn: sqlite3.Connection, league_id: str, league_form
     value_deltas = _market_value_delta_map(conn, market_format, qb_mode) if market_format else {}
     rank_deltas = {} if market_format else _expert_rank_delta_map(conn)
 
+    my_roster_id = None
+    if my_owner_id:
+        my_roster = conn.execute(
+            "SELECT roster_id FROM rosters WHERE league_id = ? AND owner_id = ?", (league_id, my_owner_id)
+        ).fetchone()
+        my_roster_id = my_roster["roster_id"] if my_roster else None
+
     # roster_players.player_id is only meaningful joined against its own
     # platform's players rows — a roster only ever holds players from the
     # platform it was synced from (see schema.sql's note on this).
     rows = conn.execute(
         """
-        SELECT DISTINCT rp.player_id, p.full_name, p.position, p.team
+        SELECT rp.roster_id, rp.player_id, p.full_name, p.position, p.team
         FROM roster_players rp
         JOIN players p ON p.player_id = rp.player_id AND p.platform = ?
         WHERE rp.league_id = ?
@@ -143,6 +152,7 @@ def find_buy_low_sell_high(conn: sqlite3.Connection, league_id: str, league_form
                 "sentiment": net_sentiment,
                 "flags": flags,
                 "qb_mode": qb_mode if market_format else None,
+                "owned_by_me": (row["roster_id"] == my_roster_id) if my_roster_id is not None else None,
             }
         )
 
