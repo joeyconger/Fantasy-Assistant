@@ -19,16 +19,18 @@ deployed (e.g. on Railway) as a small shared web dashboard.
 | Waiver/trade target identifier | ⚠️ Built + tested; same real-data caveat as above |
 | KeepTradeCut (KTC) scraper | ✅ **Verified live** — dynasty and devy, both 1QB and Superflex confirmed with real player data (Ja'Marr Chase, Bijan Robinson, Jeremiah Smith, Arch Manning, etc., sane values). Fixed a real bug found during verification: KTC nests both qb_modes per-record (`oneQBValues`/`superflexValues`), not flat top-level fields — the original `?format=2` URL guess was wrong and unnecessary, one page load has both. |
 | — 1QB vs Superflex split | ✅ Verified — auto-detected from each league's roster settings (2+ QB slots or a Superflex/OP slot → superflex) for buy-sell; explicit `--qb-mode` flag for `sync-ktc`/`devy-list` since those aren't tied to one league. |
-| FantasyPros scraper | ❌ **Same caveat as KTC** — untested against the real site. |
+| FantasyPros scraper | ✅ **Verified live** — 511 redraft consensus rankings, correct order (Gibbs #1, Bijan #2, Chase #3 — matches actual current consensus), real names/positions/teams. Worked on the first real run, no fix needed. |
 | Reddit sentiment | 🚫 **Out of scope, by decision** — not just deferred. Requires a Reddit API app only you can create, and you've said you won't be doing that. Code exists (`platforms/reddit/`, `analysis/sentiment.py`) and is unit tested, but will stay unused. Buy-low/sell-high already treats sentiment as optional, so this doesn't block anything else — it just means that one input never populates. |
 | X/Twitter | 🚫 **Skipped, deliberately.** See "Why X/Twitter was skipped" below. |
-| Buy-low/sell-high engine | ⚠️ Combines the above signals correctly (verified via synthetic data + now real KTC values). Still needs weekly-points data (no games played yet) and FantasyPros/Reddit to be fully populated for redraft leagues. |
+| Buy-low/sell-high engine | ⚠️ Combines the above signals correctly (verified via synthetic data + now real KTC + FantasyPros data). Still needs weekly-points data to say anything for a given league — no games played yet this season. |
 | Devy watchlist | ✅ Fully built and tested (it's just a manual list — no external dependency), and now cross-references real KTC devy values |
 
-**Bottom line**: Sleeper, ESPN league sync, and KTC are all verified live.
-FantasyPros and Reddit remain untested against the real thing — this
-sandbox is blocked from reaching either site, so those still need the same
-"run it, tell me what breaks" treatment KTC just got (and got fixed by).
+**Bottom line**: Sleeper, ESPN league sync, KTC, and FantasyPros are all
+verified live now — every data source except Reddit (out of scope) and
+X/Twitter (skipped) actually works against the real internet. What's left
+unverified is the ESPN player-pool/rankings endpoint (different from the
+proven ESPN league-sync endpoint) and real weekly-points data, which just
+needs the season to start.
 
 ## Setup
 
@@ -94,17 +96,15 @@ on it and seeing which mode it reports).
 
 1. ~~`fantasy-assistant sync-ktc`~~ — **done.** Verified live, dynasty +
    devy, both qb_modes, with a real bug found and fixed along the way.
-2. **`fantasy-assistant sync-rankings`** — pulls Sleeper's rank data (proven
-   to work, piggybacks on the already-verified player sync) and ESPN's
-   player pool (the new, unverified endpoint). If ESPN's part fails, paste
-   the error — it'll likely be a wrong field name I can fix once I see the
-   real shape.
-3. **`fantasy-assistant draft-board`** — once #2 works, this should show
+2. ~~`fantasy-assistant sync-fantasypros`~~ — **done.** Verified live on the
+   first try, 511 correctly-ordered redraft rankings.
+3. **`fantasy-assistant sync-rankings`** — next up. Pulls Sleeper's rank data
+   (proven to work, piggybacks on the already-verified player sync) and
+   ESPN's player pool (the new, unverified endpoint). If ESPN's part fails,
+   paste the error — it'll likely be a wrong field name, same pattern as
+   the KTC fix.
+4. **`fantasy-assistant draft-board`** — once #3 works, this should show
    players where Sleeper and ESPN disagree on rank.
-4. **`fantasy-assistant sync-fantasypros`** — next up. `FantasyProsParseError`
-   if the page structure differs from what's assumed (likely, given KTC's
-   assumed structure was also wrong in the details even though the general
-   "JSON blob in a script tag" approach was right).
 5. ~~Reddit~~ — **out of scope**, not happening. Buy-low/sell-high runs fine
    without it (sentiment is one optional input, not required).
 6. Once weekly games start (this is being built in the preseason), run
