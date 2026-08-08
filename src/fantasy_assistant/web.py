@@ -167,16 +167,28 @@ def dashboard(_user: str = Depends(require_auth), errors: str = Query(default=""
 
 
 @app.get("/draft-board", response_class=HTMLResponse)
-def draft_board_page(_user: str = Depends(require_auth), limit: int = Query(default=25)):
+def draft_board_page(
+    _user: str = Depends(require_auth), limit: int = Query(default=25), qb_mode: str = Query(default="1qb")
+):
+    if qb_mode not in ("1qb", "superflex"):
+        qb_mode = "1qb"
     conn = db_module.get_connection()
     db_module.init_db(conn)
     try:
-        results = find_rank_inefficiencies(conn, limit=limit)
+        results = find_rank_inefficiencies(conn, limit=limit, qb_mode=qb_mode)
     finally:
         conn.close()
 
+    toggle = "".join(
+        f'<a href="/draft-board?qb_mode={m}" style="margin-right:1rem;{"font-weight:bold" if m == qb_mode else ""}">{m.upper()}</a>'
+        for m in ("1qb", "superflex")
+    )
+
     if not results:
-        body = "<p class='empty'>No matched players with ranks from both platforms yet. Run sync-rankings.</p>"
+        note = ""
+        if qb_mode == "superflex":
+            note = "<p class='empty'>(Also possible: ESPN's data doesn't have a confirmed Superflex-specific rank yet.)</p>"
+        body = f"<p class='empty'>No matched players with ranks from both platforms yet. Run sync-rankings.</p>{note}"
     else:
         rows = "".join(
             f"<tr><td>{html.escape(r['name'])}</td><td>{html.escape(r['position'])}</td>"
@@ -185,9 +197,9 @@ def draft_board_page(_user: str = Depends(require_auth), limit: int = Query(defa
             for r in results
         )
         body = f"""<table><thead><tr><th>Player</th><th>Pos</th><th>Sleeper Rank</th>
-        <th>ESPN Rank</th><th>Delta</th><th>Note</th></tr></thead><tbody>{rows}</tbody></table>"""
+        <th>ESPN Rank ({qb_mode.upper()})</th><th>Delta</th><th>Note</th></tr></thead><tbody>{rows}</tbody></table>"""
 
-    return _page("Draft Board", f"<h2>Draft Board — Rank Inefficiencies</h2>{body}")
+    return _page("Draft Board", f"{toggle}<h2>Draft Board — Rank Inefficiencies</h2>{body}")
 
 
 @app.get("/waivers", response_class=HTMLResponse)

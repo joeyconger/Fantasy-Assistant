@@ -27,9 +27,17 @@ def _rank_map(conn: sqlite3.Connection, platform: str, source: str) -> dict[str,
     return {row["player_id"]: row["overall_rank"] for row in rows}
 
 
-def find_rank_inefficiencies(conn: sqlite3.Connection, limit: int = 25, rank_cap: int = DEFAULT_RANK_CAP) -> list[dict]:
+def find_rank_inefficiencies(
+    conn: sqlite3.Connection, limit: int = 25, rank_cap: int = DEFAULT_RANK_CAP, qb_mode: str = "1qb"
+) -> list[dict]:
+    """qb_mode='superflex' compares against ESPN's Superflex-specific rank
+    (espn_superflex_rank) if any was found during sync — see espn/rankings.py
+    for why that's not guaranteed to exist. Sleeper's search_rank doesn't
+    differentiate by qb_mode at all, so the Sleeper side is unaffected by
+    this parameter either way."""
+    espn_source = "espn_superflex_rank" if qb_mode == "superflex" else "espn_standard_rank"
     sleeper_ranks = _rank_map(conn, "sleeper", "sleeper_search_rank")
-    espn_ranks = _rank_map(conn, "espn", "espn_standard_rank")
+    espn_ranks = _rank_map(conn, "espn", espn_source)
 
     matches = match_players(conn, "sleeper", "espn")
 

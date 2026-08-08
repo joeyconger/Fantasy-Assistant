@@ -172,12 +172,16 @@ def sync_rankings_cmd():
 
 @cli.command("draft-board")
 @click.option("--limit", default=25, help="How many top inefficiencies to show.")
-def draft_board_cmd(limit: int):
+@click.option("--qb-mode", type=click.Choice(["1qb", "superflex"]), default="1qb")
+def draft_board_cmd(limit: int, qb_mode: str):
     """Show players where Sleeper and ESPN rank/ADP disagree most — possible draft value."""
     conn = db_module.get_connection()
-    results = find_rank_inefficiencies(conn, limit=limit)
+    results = find_rank_inefficiencies(conn, limit=limit, qb_mode=qb_mode)
     if not results:
-        click.echo("No matched players with ranks from both platforms yet. Run sync-rankings first.")
+        msg = "No matched players with ranks from both platforms yet. Run sync-rankings first."
+        if qb_mode == "superflex":
+            msg += " (Also possible: ESPN's data doesn't have a confirmed Superflex-specific rank — try --qb-mode 1qb.)"
+        click.echo(msg)
         return
 
     click.echo(f"{'Player':<25} {'Pos':<5} {'Sleeper':>8} {'ESPN':>8} {'Delta':>7}  Note")

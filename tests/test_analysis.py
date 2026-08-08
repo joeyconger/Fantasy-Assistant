@@ -52,6 +52,39 @@ def test_find_rank_inefficiencies_flags_big_divergence(conn):
     assert "ESPN drafters may get value" in results[0]["note"]
 
 
+def test_find_rank_inefficiencies_qb_mode_uses_correct_espn_source(conn):
+    from fantasy_assistant.analysis.draft_board import find_rank_inefficiencies
+
+    _add_player(conn, "1", "sleeper", "Player QB", "QB")
+    _add_player(conn, "9", "espn", "Player QB", "QB")
+    conn.execute("INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES ('1','sleeper','sleeper_search_rank',20,?)", (NOW,))
+    conn.execute("INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES ('9','espn','espn_standard_rank',60,?)", (NOW,))
+    conn.execute("INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES ('9','espn','espn_superflex_rank',22,?)", (NOW,))
+    conn.commit()
+
+    one_qb = find_rank_inefficiencies(conn, qb_mode="1qb")
+    sf = find_rank_inefficiencies(conn, qb_mode="superflex")
+
+    assert one_qb[0]["espn_rank"] == 60
+    assert sf[0]["espn_rank"] == 22
+    # Sleeper side is qb-agnostic and identical either way.
+    assert one_qb[0]["sleeper_rank"] == sf[0]["sleeper_rank"] == 20
+
+
+def test_find_rank_inefficiencies_superflex_empty_when_no_espn_superflex_data(conn):
+    from fantasy_assistant.analysis.draft_board import find_rank_inefficiencies
+
+    _add_player(conn, "1", "sleeper", "Player A", "WR")
+    _add_player(conn, "9", "espn", "Player A", "WR")
+    conn.execute("INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES ('1','sleeper','sleeper_search_rank',5,?)", (NOW,))
+    conn.execute("INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES ('9','espn','espn_standard_rank',80,?)", (NOW,))
+    conn.commit()
+
+    # No espn_superflex_rank row exists at all (honest absence, not a fabricated mirror).
+    assert find_rank_inefficiencies(conn, qb_mode="superflex") == []
+    assert len(find_rank_inefficiencies(conn, qb_mode="1qb")) == 1
+
+
 def test_find_rank_inefficiencies_excludes_players_past_rank_cap(conn):
     from fantasy_assistant.analysis.draft_board import find_rank_inefficiencies
 

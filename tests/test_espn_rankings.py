@@ -68,3 +68,43 @@ def test_sync_player_pool_upserts_players_and_rankings():
         "SELECT * FROM player_rankings WHERE player_id = '5000' AND platform = 'espn'"
     ).fetchone()
     assert no_rank_ranking is None
+
+    # No confirmed superflex-specific rank type in this payload — no
+    # espn_superflex_rank row should be fabricated for either player.
+    sf_rows = conn.execute(
+        "SELECT * FROM player_rankings WHERE platform = 'espn' AND source = 'espn_superflex_rank'"
+    ).fetchall()
+    assert sf_rows == []
+
+
+@responses.activate
+def test_sync_player_pool_writes_superflex_rank_when_present():
+    response = [
+        {
+            "player": {
+                "id": 3918298,
+                "fullName": "Test QB",
+                "defaultPositionId": 1,
+                "proTeamId": 2,
+                "draftRanksByRankType": {
+                    "STANDARD": {"rank": 25, "auctionValue": 10},
+                    "STANDARD_SUPERFLEX": {"rank": 3, "auctionValue": 50},
+                },
+                "ownership": {"averageDraftPosition": 26.0},
+            }
+        }
+    ]
+    responses.add(responses.GET, URL, json=response)
+    conn = _make_db()
+    client = ESPNClient()
+
+    sync_player_pool(conn, client, SEASON)
+
+    one_qb = conn.execute(
+        "SELECT overall_rank FROM player_rankings WHERE player_id = '3918298' AND source = 'espn_standard_rank'"
+    ).fetchone()
+    sf = conn.execute(
+        "SELECT overall_rank FROM player_rankings WHERE player_id = '3918298' AND source = 'espn_superflex_rank'"
+    ).fetchone()
+    assert one_qb["overall_rank"] == 25
+    assert sf["overall_rank"] == 3  # distinct from the 1QB rank, not a mirrored duplicate
