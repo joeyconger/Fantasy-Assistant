@@ -20,7 +20,7 @@ deployed (e.g. on Railway) as a small shared web dashboard.
 | KeepTradeCut (KTC) scraper | ✅ **Verified live** — dynasty and devy, both 1QB and Superflex confirmed with real player data (Ja'Marr Chase, Bijan Robinson, Jeremiah Smith, Arch Manning, etc., sane values). Fixed a real bug found during verification: KTC nests both qb_modes per-record (`oneQBValues`/`superflexValues`), not flat top-level fields — the original `?format=2` URL guess was wrong and unnecessary, one page load has both. |
 | — 1QB vs Superflex split | ✅ Verified — auto-detected from each league's roster settings (2+ QB slots or a Superflex/OP slot → superflex) for buy-sell; explicit `--qb-mode` flag for `sync-ktc`/`devy-list` since those aren't tied to one league. |
 | FantasyPros scraper | ❌ **Same caveat as KTC** — untested against the real site. |
-| Reddit sentiment | ❌ **Cannot be tested at all yet** — needs a Reddit API app (client ID/secret) that only you can create, and this sandbox can't reach reddit.com anyway. Code is standard PRAW usage, structurally sound, never actually run. |
+| Reddit sentiment | 🚫 **Out of scope, by decision** — not just deferred. Requires a Reddit API app only you can create, and you've said you won't be doing that. Code exists (`platforms/reddit/`, `analysis/sentiment.py`) and is unit tested, but will stay unused. Buy-low/sell-high already treats sentiment as optional, so this doesn't block anything else — it just means that one input never populates. |
 | X/Twitter | 🚫 **Skipped, deliberately.** See "Why X/Twitter was skipped" below. |
 | Buy-low/sell-high engine | ⚠️ Combines the above signals correctly (verified via synthetic data + now real KTC values). Still needs weekly-points data (no games played yet) and FantasyPros/Reddit to be fully populated for redraft leagues. |
 | Devy watchlist | ✅ Fully built and tested (it's just a manual list — no external dependency), and now cross-references real KTC devy values |
@@ -105,9 +105,8 @@ on it and seeing which mode it reports).
    if the page structure differs from what's assumed (likely, given KTC's
    assumed structure was also wrong in the details even though the general
    "JSON blob in a script tag" approach was right).
-5. **Reddit**: create a script app at https://www.reddit.com/prefs/apps
-   (takes 2 minutes, just needs a Reddit account), set `REDDIT_CLIENT_ID`
-   and `REDDIT_CLIENT_SECRET`, then `fantasy-assistant sync-reddit`.
+5. ~~Reddit~~ — **out of scope**, not happening. Buy-low/sell-high runs fine
+   without it (sentiment is one optional input, not required).
 6. Once weekly games start (this is being built in the preseason), run
    `sync-weekly-points` for each league — `waiver-targets`/`trade-targets`/
    `buy-sell` all need real weekly points data to say anything useful; right
