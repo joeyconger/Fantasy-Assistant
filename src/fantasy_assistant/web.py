@@ -30,6 +30,16 @@ from .platforms.espn.sync import sync_league as espn_sync_league
 from .platforms.sleeper.client import SleeperAPIError, SleeperClient
 from .platforms.sleeper.sync import sync_league as sleeper_sync_league
 from .platforms.sleeper.sync import sync_players
+from .web_components import (
+    FORMAT_COLORS,
+    PAGE_STYLE,
+    avatar,
+    format_badge,
+    player_cell,
+    position_badge,
+    stat_tile,
+    table_wrap,
+)
 
 DASHBOARD_USER = os.environ.get("DASHBOARD_USER")
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD")
@@ -74,28 +84,17 @@ def _my_owner_id_for(league_id: str) -> str | None:
     return None
 
 
-def _page(title: str, body: str, nav_extra: str = "") -> str:
+def _page(title: str, body: str) -> str:
     return f"""<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Fantasy Assistant — {html.escape(title)}</title>
-<style>
-  body {{ font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }}
-  table {{ border-collapse: collapse; width: 100%; margin-bottom: 1.5rem; }}
-  th, td {{ text-align: left; padding: 0.4rem 0.8rem; border-bottom: 1px solid #ddd; }}
-  .tag {{ font-size: 0.75rem; font-weight: normal; color: #666; }}
-  button {{ padding: 0.5rem 1rem; cursor: pointer; }}
-  .errors {{ background: #fdecea; border: 1px solid #f5c2c0; padding: 0.75rem 1rem; border-radius: 4px; margin-bottom: 1rem; }}
-  nav {{ margin-bottom: 1.5rem; }}
-  nav a {{ margin-right: 1rem; }}
-  .flag-buy {{ color: #1a7f37; font-weight: bold; }}
-  .flag-sell {{ color: #b91c1c; font-weight: bold; }}
-  .empty {{ color: #666; font-style: italic; }}
-</style>
+<style>{PAGE_STYLE}</style>
 </head>
 <body>
-  <h1>Fantasy Assistant</h1>
+  <h1>🏈 Fantasy Assistant</h1>
   <nav>
     <a href="/">Standings</a>
     <a href="/draft-board">Draft Board</a>
@@ -104,27 +103,69 @@ def _page(title: str, body: str, nav_extra: str = "") -> str:
     <a href="/trade-analyzer">Trade Analyzer</a>
     <a href="/devy">Devy Watchlist</a>
   </nav>
-  {nav_extra}
   {body}
 </body>
 </html>"""
 
 
 def _league_select(conn, current: str | None, action_base: str) -> str:
-    leagues = conn.execute("SELECT league_id, name, platform FROM leagues ORDER BY platform, name").fetchall()
+    """League switcher as color-coded tabs (by format: redraft/dynasty/devy)
+    rather than a plain dropdown — makes it visually obvious which context
+    you're in, per-page, at a glance."""
+    leagues = conn.execute("SELECT league_id, name, platform, format FROM leagues ORDER BY platform, name").fetchall()
     if not leagues:
         return "<p class='empty'>No leagues synced yet.</p>"
-    options = "".join(
-        f'<option value="{html.escape(l["league_id"])}" {"selected" if l["league_id"] == current else ""}>'
-        f'{html.escape(l["name"] or l["league_id"])} ({html.escape(l["platform"])})</option>'
-        for l in leagues
-    )
-    return f"""
-    <form method="get" action="{action_base}" style="margin-bottom:1rem;">
-      <select name="league_id" onchange="this.form.submit()">{options}</select>
-      <noscript><button type="submit">Go</button></noscript>
-    </form>
-    """
+    tabs = []
+    for l in leagues:
+        color = FORMAT_COLORS.get(l["format"], "#94a3b8")
+        active = l["league_id"] == current
+        style = f"background:{color}; border-color:{color};" if active else ""
+        tabs.append(
+            f'<a class="{"active" if active else ""}" style="{style}" '
+            f'href="{action_base}?league_id={html.escape(l["league_id"])}">'
+            f'{html.escape(l["name"] or l["league_id"])}</a>'
+        )
+    return f'<div class="tabs">{"".join(tabs)}</div>'
+
+
+def _priority_items(conn, leagues) -> str:
+    """Cross-league digest: the most actionable buy/sell flags and waiver
+    adds, surfaced first — this is what makes '/' a decision-support view
+    instead of just a standings page you have to interpret yourself."""
+    flags = []
+    adds = []
+    for league in leagues:
+        my_owner_id = _my_owner_id_for(league["league_id"])
+        for r in find_buy_low_sell_high(conn, league["league_id"], league["format"] or "redraft", limit=3, my_owner_id=my_owner_id):
+            for flag, reason in r["flags"]:
+                flags.append((league, r, flag, reason))
+        for r in top_waiver_adds(conn, league["league_id"], limit=3, my_owner_id=my_owner_id):
+            adds.append((league, r))
+
+    if not flags and not adds:
+        return (
+            "<p class='empty'>No priorities yet — needs sync-weekly-points once games are being played, "
+            "plus sync-ktc/sync-fantasypros for buy-sell flags.</p>"
+        )
+
+    cards = []
+    for league, r, flag, reason in flags[:6]:
+        cards.append(f"""
+        <div class="card">
+          {player_cell(r['name'], r['position'])}
+          <div class="flag-{'buy' if flag == 'buy_low' else 'sell'}">{flag.upper().replace('_', '-')}</div>
+          <p class="tag">{html.escape(reason)} · {format_badge(league['format'])} {html.escape(league['name'] or '')}</p>
+        </div>
+        """)
+    for league, r in adds[:6]:
+        cards.append(f"""
+        <div class="card">
+          {player_cell(r['name'], r['position'])}
+          <div class="tag">Waiver add · recent avg {r['recent_avg']}</div>
+          <p class="tag">{format_badge(league['format'])} {html.escape(league['name'] or '')}</p>
+        </div>
+        """)
+    return "".join(cards)
 
 
 def _render_dashboard(conn, errors: list[str] | None = None) -> str:
@@ -134,6 +175,23 @@ def _render_dashboard(conn, errors: list[str] | None = None) -> str:
     if errors:
         items = "".join(f"<li>{html.escape(e)}</li>" for e in errors)
         error_html = f'<div class="errors"><strong>Sync had problems:</strong><ul>{items}</ul></div>'
+
+    sync_form = '<form method="post" action="/sync" onsubmit="this.querySelector(\'button\').disabled=true; this.querySelector(\'button\').textContent=\'Syncing…\';"><button type="submit">Sync Now</button></form>'
+
+    if not leagues:
+        return _page("Dashboard", sync_form + error_html + "<p class='empty'>No leagues synced yet. Click Sync Now.</p>")
+
+    tiles = "".join(
+        [
+            stat_tile("Leagues", str(len(leagues))),
+            stat_tile(
+                "Platforms",
+                ", ".join(sorted({l["platform"] for l in leagues})),
+            ),
+        ]
+    )
+
+    priorities = _priority_items(conn, leagues)
 
     sections = []
     for league in leagues:
@@ -154,21 +212,28 @@ def _render_dashboard(conn, errors: list[str] | None = None) -> str:
             f"<td>{r['ties']}</td><td>{r['fpts']:.2f}</td><td>{r['fpts_against']:.2f}</td></tr>"
             for r in rows
         )
+        no_rosters_row = '<tr><td colspan="6">No rosters synced yet.</td></tr>'
+        table_html = table_wrap(
+            f"<table><thead><tr><th>Team</th><th>W</th><th>L</th><th>T</th><th>PF</th><th>PA</th></tr></thead>"
+            f"<tbody>{row_html or no_rosters_row}</tbody></table>"
+        )
         sections.append(f"""
         <section>
-          <h2>{html.escape(str(league['name'] or league['league_id']))}
-            <span class="tag">{html.escape(str(league['platform']))} · {html.escape(str(league['format'] or ''))}</span>
-          </h2>
-          <table>
-            <thead><tr><th>Team</th><th>W</th><th>L</th><th>T</th><th>PF</th><th>PA</th></tr></thead>
-            <tbody>{row_html or '<tr><td colspan="6">No rosters synced yet.</td></tr>'}</tbody>
-          </table>
+          <h3>{html.escape(str(league['name'] or league['league_id']))}
+            {format_badge(league['format'])} <span class="tag">{html.escape(str(league['platform']))}</span>
+          </h3>
+          {table_html}
         </section>
         """)
 
-    body = "".join(sections) or "<p class='empty'>No leagues synced yet. Click Sync Now.</p>"
-    sync_form = '<form method="post" action="/sync"><button type="submit">Sync Now</button></form>'
-    return _page("Standings", sync_form + error_html + body)
+    body = f"""
+    {tiles}
+    <h2>This Week's Priorities</h2>
+    {priorities}
+    <h2>Standings</h2>
+    {''.join(sections)}
+    """
+    return _page("Dashboard", sync_form + error_html + body)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -196,9 +261,11 @@ def draft_board_page(
         conn.close()
 
     toggle = "".join(
-        f'<a href="/draft-board?qb_mode={m}" style="margin-right:1rem;{"font-weight:bold" if m == qb_mode else ""}">{m.upper()}</a>'
+        f'<a class="{"active" if m == qb_mode else ""}" style="{"background:#2563eb;" if m == qb_mode else ""}" '
+        f'href="/draft-board?qb_mode={m}">{m.upper()}</a>'
         for m in ("1qb", "superflex")
     )
+    toggle = f'<div class="tabs">{toggle}</div>'
 
     if not results:
         note = ""
@@ -207,13 +274,15 @@ def draft_board_page(
         body = f"<p class='empty'>No matched players with ranks from both platforms yet. Run sync-rankings.</p>{note}"
     else:
         rows = "".join(
-            f"<tr><td>{html.escape(r['name'])}</td><td>{html.escape(r['position'])}</td>"
+            f"<tr><td>{player_cell(r['name'], r['position'])}</td>"
             f"<td>{r['sleeper_rank']}</td><td>{r['espn_rank']}</td><td>{r['delta']:+}</td>"
             f"<td>{html.escape(r['note'])}</td></tr>"
             for r in results
         )
-        body = f"""<table><thead><tr><th>Player</th><th>Pos</th><th>Sleeper Rank</th>
+        body = table_wrap(
+            f"""<table><thead><tr><th>Player</th><th>Sleeper Rank</th>
         <th>ESPN Rank ({qb_mode.upper()})</th><th>Delta</th><th>Note</th></tr></thead><tbody>{rows}</tbody></table>"""
+        )
 
     return _page("Draft Board", f"{toggle}<h2>Draft Board — Rank Inefficiencies</h2>{body}")
 
@@ -246,21 +315,23 @@ def waivers_page(_user: str = Depends(require_auth), league_id: str | None = Que
     def table(items, extra_col=None):
         if not items:
             return "<p class='empty'>No candidates yet — run sync-weekly-points and sync-rankings.</p>"
-        header = "<th>Player</th><th>Pos</th><th>Team</th><th>Recent Avg</th><th>Trend</th><th>Rank</th><th>Need</th>"
+        header = "<th>Player</th><th>Team</th><th>Recent Avg</th><th>Trend</th><th>Rank</th><th>Need</th>"
         if extra_col:
             header += f"<th>{extra_col}</th>"
         rows = ""
         for r in items:
-            need_badge = "<strong>FILLS NEED</strong>" if r.get("fills_need") else ""
+            need_badge = "<span class='badge' style='background:#16a34a;'>FILLS NEED</span>" if r.get("fills_need") else ""
+            trend_class = "flag-buy" if r["trend"] > 0 else "flag-sell" if r["trend"] < 0 else ""
             row = (
-                f"<td>{html.escape(r['name'])}</td><td>{html.escape(r['position'] or '')}</td>"
-                f"<td>{html.escape(r['team'] or '')}</td><td>{r['recent_avg']}</td><td>{r['trend']:+}</td>"
+                f"<td>{player_cell(r['name'], r['position'])}</td>"
+                f"<td>{html.escape(r['team'] or '')}</td><td>{r['recent_avg']}</td>"
+                f"<td class='{trend_class}'>{r['trend']:+}</td>"
                 f"<td>{r['rank'] if r['rank'] is not None else '-'}</td><td>{need_badge}</td>"
             )
             if extra_col:
                 row += f"<td>{html.escape(r.get('owned_by', ''))}</td>"
             rows += f"<tr>{row}</tr>"
-        return f"<table><thead><tr>{header}</tr></thead><tbody>{rows}</tbody></table>"
+        return table_wrap(f"<table><thead><tr>{header}</tr></thead><tbody>{rows}</tbody></table>")
 
     body = f"""
     {selector}
@@ -299,7 +370,7 @@ def buy_sell_page(_user: str = Depends(require_auth), league_id: str | None = Qu
     )
 
     if not results:
-        body = f"{personalization_note}<p class='empty'>No flags yet — needs sync-weekly-points plus sync-ktc/sync-fantasypros/sync-reddit.</p>"
+        body = f"{personalization_note}<p class='empty'>No flags yet — needs sync-weekly-points plus sync-ktc/sync-fantasypros.</p>"
     else:
         cards = []
         for r in results:
@@ -314,13 +385,14 @@ def buy_sell_page(_user: str = Depends(require_auth), league_id: str | None = Qu
             elif r.get("owned_by_me") is False:
                 ownership = " <span class='tag'>trade target</span>"
             cards.append(f"""
-            <section>
-              <h3>{html.escape(r['name'])} ({html.escape(r['position'] or '')}, {html.escape(r['team'] or '')}){ownership}</h3>
+            <div class="card">
+              {player_cell(r['name'], r['position'])}
+              <p class="tag">{html.escape(r['team'] or '')}{ownership}</p>
               <p>Recent avg: {r['recent_avg']} · Season avg: {r['season_avg']} · Trend: {r['perf_trend']:+}
               {f" · Market delta: {r['market_delta']:+}" if r['market_delta'] is not None else ""}
               {f" · Sentiment: {r['sentiment']:+}" if r['sentiment'] is not None else ""}</p>
               {flag_html}
-            </section>
+            </div>
             """)
         body = personalization_note + "".join(cards)
 
@@ -384,13 +456,13 @@ def trade_analyzer_page(
             if not players:
                 return f"<p class='empty'>Side {label}: nothing resolved.</p>"
             rows = "".join(
-                f"<tr><td>{html.escape(p['full_name'])}</td><td>{html.escape(p['position'] or '')}</td><td>{p['metric']}</td></tr>"
+                f"<tr><td>{player_cell(p['full_name'], p['position'])}</td><td>{p['metric']}</td></tr>"
                 for p in players
             )
-            return f"""<h4>Side {label} sends</h4>
-            <table><thead><tr><th>Player</th><th>Pos</th><th>{metric.title()}</th></tr></thead>
-            <tbody>{rows}</tbody></table>
-            <p>Total: {total}</p>"""
+            table_html = table_wrap(
+                f"<table><thead><tr><th>Player</th><th>{metric.title()}</th></tr></thead><tbody>{rows}</tbody></table>"
+            )
+            return f"<h4>Side {label} sends</h4>{table_html}<p>Total: {total}</p>"
 
         unresolved_html = ""
         if result["unresolved"]:
@@ -432,22 +504,27 @@ def devy_page(_user: str = Depends(require_auth), qb_mode: str = Query(default="
         conn.close()
 
     toggle = "".join(
-        f'<a href="/devy?qb_mode={m}" style="margin-right:1rem;{"font-weight:bold" if m == qb_mode else ""}">{m.upper()}</a>'
+        f'<a class="{"active" if m == qb_mode else ""}" style="{"background:#14b8a6;" if m == qb_mode else ""}" '
+        f'href="/devy?qb_mode={m}">{m.upper()}</a>'
         for m in ("1qb", "superflex")
     )
+    toggle = f'<div class="tabs">{toggle}</div>'
 
     if not prospects:
         body = f"{toggle}<p class='empty'>Watchlist is empty. Add prospects with the CLI: fantasy-assistant devy-add.</p>"
     else:
         rows = "".join(
-            f"<tr><td>{html.escape(p['full_name'])}</td><td>{html.escape(p['position'] or '')}</td>"
+            f"<tr><td>{player_cell(p['full_name'], p['position'])}</td>"
             f"<td>{html.escape(p['college'] or '')}</td><td>{html.escape(p['notes'] or '')}</td>"
             f"<td>{p['ktc_value'] if p['ktc_value'] is not None else '-'}</td>"
             f"<td>{p['ktc_rank'] if p['ktc_rank'] is not None else '-'}</td></tr>"
             for p in prospects
         )
-        body = f"""{toggle}<table><thead><tr><th>Name</th><th>Pos</th><th>College</th><th>Notes</th>
-        <th>KTC Devy Value ({qb_mode.upper()})</th><th>KTC Devy Rank</th></tr></thead><tbody>{rows}</tbody></table>
+        table_html = table_wrap(
+            f"""<table><thead><tr><th>Name</th><th>College</th><th>Notes</th>
+        <th>KTC Devy Value ({qb_mode.upper()})</th><th>KTC Devy Rank</th></tr></thead><tbody>{rows}</tbody></table>"""
+        )
+        body = f"""{toggle}{table_html}
         <p class='empty'>Manage the watchlist via CLI: fantasy-assistant devy-add / devy-remove.</p>"""
 
     return _page("Devy Watchlist", f"<h2>Devy Watchlist</h2>{body}")

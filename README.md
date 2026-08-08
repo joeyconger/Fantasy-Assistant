@@ -4,7 +4,8 @@ Decision-support tool for Sleeper and ESPN fantasy football leagues — league
 sync, a draft-value inefficiency finder, waiver/trade targeting personalized
 to your roster's actual needs, a buy-low/sell-high engine, a trade analyzer,
 and devy prospect tracking. Usable as a local CLI, or deployed (e.g. on
-Railway) as a small shared web dashboard.
+Railway) as a small shared web dashboard with a Sleeper/ESPN-app-style design
+(position/format color coding, player cards, a priority-flagged home view).
 
 ## Status at a glance
 
@@ -30,8 +31,50 @@ Railway) as a small shared web dashboard.
 **Bottom line**: every data source except Reddit (out of scope) and
 X/Twitter (skipped) is verified live — Sleeper, ESPN (league sync +
 player-pool rankings, both qb_modes), KTC, and FantasyPros. Phase A
-(functional gaps) is complete. What's left is real weekly-points data, which just
-needs the season to start.
+(functional gaps) is complete. Phase B (design polish + personalization +
+trade analyzer) is also complete. What's left is real weekly-points data,
+which just needs the season to start.
+
+## Phase B: design polish + features — complete
+
+Everything from the "make it feel like a real app, not bare-bones" pass:
+
+- **Design system** (`web_components.py`): CSS custom properties for a
+  light/dark (`prefers-color-scheme`) theme, a shared color scale for
+  positions (QB/RB/WR/TE/K/DEF) and a separate one for league formats
+  (redraft/dynasty/devy) so the two are never visually confused, plus small
+  HTML-generating helpers (`player_cell`, `avatar`, `position_badge`,
+  `format_badge`, `stat_tile`, `table_wrap`) reused across every page. All
+  user-controlled strings (names, notes, etc.) are HTML-escaped —
+  covered by `tests/test_web_components.py`.
+- **Hand-rolled CSS, not a component library**: considered shadcn/ui, but
+  that implies a React/Node SPA rewrite of an app that's otherwise a simple
+  Python server-rendered tool with no complex client state — not worth the
+  migration risk or the departure from "small deployable chunks." See the
+  docstring at the top of `web_components.py`.
+- **Home dashboard rebuilt as a priority view**: instead of just standings,
+  `/` now leads with a cross-league "This Week's Priorities" digest (top
+  buy/sell flags + waiver adds across every synced league) via
+  `_priority_items`, with stat tiles up top and standings below.
+- **League switcher**: color-coded tabs by format (redraft/dynasty/devy)
+  instead of a plain `<select>` dropdown, so it's obvious at a glance which
+  league context you're in.
+- **Mobile responsive**: nav and league-tabs wrap/scroll horizontally on
+  narrow viewports, tables scroll inside their own container instead of
+  blowing out the page width, and a `@media (max-width: 640px)` block
+  shrinks font sizes/padding.
+- **Personalization** (`my_owner_id` in `config/leagues.yaml`): waiver
+  adds and buy-sell flags now tag whether a candidate fills one of your
+  roster's actual weak positions (`analysis/roster_needs.py`), and trade
+  targets exclude your own roster.
+- **Trade analyzer** (`analysis/trade_analyzer.py`, `/trade-analyzer`):
+  evaluate a proposed trade by KTC value (dynasty/devy) or FantasyPros rank
+  (redraft), reporting unresolved player names explicitly rather than
+  silently dropping them.
+
+No new environment variables or schema changes for any of this — it's all
+additive on top of the existing tables, so it's safe to deploy straight to
+the live Railway instance.
 
 ## Setup
 
@@ -49,14 +92,15 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-47 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
+86 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
 the private-league auth path, the players table's platform-scoped primary
 key (prevents Sleeper/ESPN ID collisions), cross-platform name matching
 (suffixes, punctuation, ambiguous-duplicate handling), the rank-inefficiency
 engine, performance trend math, waiver/trade filtering, the buy-low/sell-high
 flag logic, KTC/FantasyPros parser strategies against synthetic HTML, Reddit
-sentiment scoring, the devy watchlist, and the web dashboard (auth gating,
-XSS-escaping, missing-env-var fail-fast).
+sentiment scoring, the devy watchlist, roster-needs gap analysis, the trade
+analyzer, the design-system component helpers (XSS-escaping), and the web
+dashboard (auth gating, XSS-escaping, missing-env-var fail-fast).
 
 What tests can't cover: whether the *real* KTC/FantasyPros pages match the
 HTML/JSON shapes the parsers assume, and whether Reddit's API behaves as
@@ -155,11 +199,11 @@ redo it, or want to point a fresh Railway project at this repo.
    `ESPN_SWID`, `ESPN_S2`, and (once you set them up) `REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET`.
 4. **Networking → Generate Domain**.
 
-Web dashboard pages: `/` (standings + Sync Now), `/draft-board`,
-`/waivers`, `/buy-sell`, `/devy`. All behind the shared login. The devy
-watchlist is view-only on the web — add/remove prospects via the CLI
-(`devy-add`/`devy-remove`) since that's a local/one-time action, not
-something that needed a web form yet.
+Web dashboard pages: `/` (priorities + standings + Sync Now),
+`/draft-board`, `/waivers`, `/buy-sell`, `/trade-analyzer`, `/devy`. All
+behind the shared login. The devy watchlist is view-only on the web —
+add/remove prospects via the CLI (`devy-add`/`devy-remove`) since that's a
+local/one-time action, not something that needed a web form yet.
 
 ## Data model notes
 
@@ -202,6 +246,7 @@ config/
 src/fantasy_assistant/
   cli.py                      # all CLI commands
   web.py                       # FastAPI dashboard
+  web_components.py            # design system: CSS tokens + HTML component helpers
   devy.py                       # devy watchlist CRUD
   config.py                   # config/leagues.yaml + secrets.yaml/env loading
   db.py                        # SQLite connection/init
@@ -222,5 +267,5 @@ src/fantasy_assistant/
     ktc/                        # client (verified live), sync
     fantasypros/                # client (verified live), sync
     reddit/                     # client (UNTESTED - needs credentials), sync
-tests/                        # 78 tests, see "Run the tests" above
+tests/                        # 86 tests, see "Run the tests" above
 ```
