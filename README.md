@@ -76,6 +76,38 @@ No new environment variables or schema changes for any of this — it's all
 additive on top of the existing tables, so it's safe to deploy straight to
 the live Railway instance.
 
+## Phase C: league-first navigation — complete
+
+Restructured navigation around leagues instead of tools: each league now
+gets its own hub page (`/league/{league_id}`) that only shows the tools its
+actual rules support, instead of one flat tool list with a league picker
+bolted onto each page.
+
+- **BMFS** (redraft, Sleeper, 1QB) and **Lads** (redraft, ESPN, confirmed
+  Superflex): Draft Board, Waivers/Trades, Buy/Sell (FantasyPros-anchored),
+  Trade Analyzer — same tool set, each locked to its own qb_mode.
+- **Weekend Warriors** (dynasty, Sleeper): Waivers/Trades, Buy/Sell
+  (KTC-anchored), Trade Analyzer — no Draft Board, since there's no startup
+  draft to prep for in an ongoing dynasty league.
+- **Dollars for Devys** (devy, Sleeper, Superflex): Waivers/Trades, Buy/Sell,
+  Trade Analyzer, plus the **Devy Watchlist** — the only league that gets it,
+  since it's the only one that's actually devy.
+
+Every tool auto-locks to its league's real settings instead of asking you to
+pick: `qb_mode` (1QB vs Superflex) is read live from that league's synced
+`roster_positions` (`analysis/roster_format.detect_qb_mode`) rather than a
+manual toggle, and KTC vs FantasyPros anchoring already followed from
+format. The old flat routes (`/draft-board`, `/waivers`, `/buy-sell`,
+`/trade-analyzer`, `/devy`) are gone — everything lives under
+`/league/{league_id}/...` now. Top nav is Home + one tab per league;
+each league hub has its own sub-nav for just its applicable tools.
+
+Also fixed while touching this: standings would 500 if `fpts`/`fpts_against`
+were still NULL (a freshly-synced league before any games are played) —
+`_standings_table_html` now treats NULL as 0.0 instead of crashing.
+
+No new environment variables or schema changes.
+
 ## Setup
 
 ```powershell
@@ -92,7 +124,7 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-86 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
+95 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
 the private-league auth path, the players table's platform-scoped primary
 key (prevents Sleeper/ESPN ID collisions), cross-platform name matching
 (suffixes, punctuation, ambiguous-duplicate handling), the rank-inefficiency
@@ -199,10 +231,12 @@ redo it, or want to point a fresh Railway project at this repo.
    `ESPN_SWID`, `ESPN_S2`, and (once you set them up) `REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET`.
 4. **Networking → Generate Domain**.
 
-Web dashboard pages: `/` (priorities + standings + Sync Now),
-`/draft-board`, `/waivers`, `/buy-sell`, `/trade-analyzer`, `/devy`. All
-behind the shared login. The devy watchlist is view-only on the web —
-add/remove prospects via the CLI (`devy-add`/`devy-remove`) since that's a
+Web dashboard pages: `/` (priorities + standings + Sync Now), then
+`/league/{league_id}` for each league's hub, with `/league/{league_id}/draft-board`,
+`/waivers`, `/buy-sell`, `/trade-analyzer`, and (devy league only) `/devy`
+underneath it — see "Phase C" above. All behind the shared login. The devy
+watchlist is view-only on the web — add/remove prospects via the CLI
+(`devy-add`/`devy-remove`) since that's a
 local/one-time action, not something that needed a web form yet.
 
 ## Data model notes
@@ -267,5 +301,5 @@ src/fantasy_assistant/
     ktc/                        # client (verified live), sync
     fantasypros/                # client (verified live), sync
     reddit/                     # client (UNTESTED - needs credentials), sync
-tests/                        # 86 tests, see "Run the tests" above
+tests/                        # 95 tests, see "Run the tests" above
 ```

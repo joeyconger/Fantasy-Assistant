@@ -3,6 +3,13 @@ terminal can view standings and trigger a sync. Gated by HTTP Basic Auth —
 this is a single shared login, not per-user accounts. Fine for "me and a few
 friends I trust with the URL"; not a substitute for real auth if this ever
 needs to isolate different people's data from each other.
+
+Navigation is league-first, not tool-first: each league gets its own hub
+(`/league/{id}`) that only links to the tools that make sense for its actual
+rules — a dynasty league has no Draft Board (there's no startup draft to
+prep for), only the devy league shows the devy watchlist, and every value
+lookup (KTC vs FantasyPros, 1QB vs Superflex) is anchored to that league's
+own detected format instead of asking you to pick it by hand.
 """
 
 from __future__ import annotations
@@ -22,6 +29,7 @@ from . import db as db_module
 from . import devy as devy_module
 from .analysis.buy_low_sell_high import find_buy_low_sell_high
 from .analysis.draft_board import find_rank_inefficiencies
+from .analysis.roster_format import detect_qb_mode
 from .analysis.trade_analyzer import TradeAnalyzerError, analyze_trade
 from .analysis.waiver_targets import top_trade_targets, top_waiver_adds
 from .platforms.espn.client import ESPNAPIError, ESPNAuthRequired, ESPNClient
@@ -30,16 +38,7 @@ from .platforms.espn.sync import sync_league as espn_sync_league
 from .platforms.sleeper.client import SleeperAPIError, SleeperClient
 from .platforms.sleeper.sync import sync_league as sleeper_sync_league
 from .platforms.sleeper.sync import sync_players
-from .web_components import (
-    FORMAT_COLORS,
-    PAGE_STYLE,
-    avatar,
-    format_badge,
-    player_cell,
-    position_badge,
-    stat_tile,
-    table_wrap,
-)
+from .web_components import FORMAT_COLORS, PAGE_STYLE, format_badge, player_cell, stat_tile, table_wrap
 
 DASHBOARD_USER = os.environ.get("DASHBOARD_USER")
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD")
@@ -84,7 +83,59 @@ def _my_owner_id_for(league_id: str) -> str | None:
     return None
 
 
-def _page(title: str, body: str) -> str:
+def _qb_mode_for_league(conn, league_id: str) -> str:
+    row = conn.execute("SELECT roster_positions FROM leagues WHERE league_id = ?", (league_id,)).fetchone()
+    return detect_qb_mode(row["roster_positions"] if row else None)
+
+
+def _get_league_or_404(conn, league_id: str):
+    league = conn.execute("SELECT * FROM leagues WHERE league_id = ?", (league_id,)).fetchone()
+    if not league:
+        raise HTTPException(status_code=404, detail="League not found")
+    return league
+
+
+def _nav_html(conn, current_league_id: str | None = None) -> str:
+    """Top-level nav: Home + one tab per synced league, color-coded by
+    format. Replaces the old flat tool-list nav — the league you're in is
+    now the primary axis of navigation, not the tool."""
+    leagues = conn.execute("SELECT league_id, name, format FROM leagues ORDER BY platform, name").fetchall()
+    links = [f'<a class="{"active" if current_league_id is None else ""}" href="/">Home</a>']
+    for l in leagues:
+        active = l["league_id"] == current_league_id
+        color = FORMAT_COLORS.get(l["format"], "#94a3b8")
+        style = f'style="background:{color}; border-color:{color};"' if active else ""
+        links.append(
+            f'<a class="{"active" if active else ""}" {style} '
+            f'href="/league/{quote(l["league_id"])}">{html.escape(l["name"] or l["league_id"])}</a>'
+        )
+    return "".join(links)
+
+
+def _tool_subnav(league_id: str, format_: str | None, current: str) -> str:
+    """Tool tabs scoped to one league, filtered to what that league's format
+    actually supports — a dynasty/devy league has no startup draft to prep
+    for, so no Draft Board; only the devy league gets the watchlist."""
+    format_ = format_ or "redraft"
+    items = []
+    if format_ == "redraft":
+        items.append(("draft-board", "Draft Board"))
+    items.append(("waivers", "Waivers/Trades"))
+    items.append(("buy-sell", "Buy/Sell"))
+    items.append(("trade-analyzer", "Trade Analyzer"))
+    if format_ == "devy":
+        items.append(("devy", "Devy Watchlist"))
+
+    links = []
+    for slug, label in items:
+        active = slug == current
+        style = 'style="background:var(--accent); border-color:var(--accent);"' if active else ""
+        links.append(f'<a class="{"active" if active else ""}" {style} href="/league/{quote(league_id)}/{slug}">{label}</a>')
+    return f'<div class="tabs">{"".join(links)}</div>'
+
+
+def _page(title: str, body: str, nav_html: str | None = None) -> str:
+    nav_html = nav_html if nav_html is not None else '<a class="active" href="/">Home</a>'
     return f"""<!doctype html>
 <html>
 <head>
@@ -96,36 +147,35 @@ def _page(title: str, body: str) -> str:
 <body>
   <h1>🏈 Fantasy Assistant</h1>
   <nav>
-    <a href="/">Standings</a>
-    <a href="/draft-board">Draft Board</a>
-    <a href="/waivers">Waivers/Trades</a>
-    <a href="/buy-sell">Buy/Sell</a>
-    <a href="/trade-analyzer">Trade Analyzer</a>
-    <a href="/devy">Devy Watchlist</a>
+    {nav_html}
   </nav>
   {body}
 </body>
 </html>"""
 
 
-def _league_select(conn, current: str | None, action_base: str) -> str:
-    """League switcher as color-coded tabs (by format: redraft/dynasty/devy)
-    rather than a plain dropdown — makes it visually obvious which context
-    you're in, per-page, at a glance."""
-    leagues = conn.execute("SELECT league_id, name, platform, format FROM leagues ORDER BY platform, name").fetchall()
-    if not leagues:
-        return "<p class='empty'>No leagues synced yet.</p>"
-    tabs = []
-    for l in leagues:
-        color = FORMAT_COLORS.get(l["format"], "#94a3b8")
-        active = l["league_id"] == current
-        style = f"background:{color}; border-color:{color};" if active else ""
-        tabs.append(
-            f'<a class="{"active" if active else ""}" style="{style}" '
-            f'href="{action_base}?league_id={html.escape(l["league_id"])}">'
-            f'{html.escape(l["name"] or l["league_id"])}</a>'
-        )
-    return f'<div class="tabs">{"".join(tabs)}</div>'
+def _standings_table_html(conn, league_id: str) -> str:
+    rows = conn.execute(
+        """
+        SELECT r.wins, r.losses, r.ties, r.fpts, r.fpts_against,
+               COALESCE(o.team_name, o.display_name, 'Roster ' || r.roster_id) AS team
+        FROM rosters r
+        LEFT JOIN owners o ON o.league_id = r.league_id AND o.owner_id = r.owner_id
+        WHERE r.league_id = ?
+        ORDER BY r.wins DESC, r.fpts DESC
+        """,
+        (league_id,),
+    ).fetchall()
+    row_html = "".join(
+        f"<tr><td>{html.escape(str(r['team']))}</td><td>{r['wins']}</td><td>{r['losses']}</td>"
+        f"<td>{r['ties']}</td><td>{(r['fpts'] or 0.0):.2f}</td><td>{(r['fpts_against'] or 0.0):.2f}</td></tr>"
+        for r in rows
+    )
+    no_rosters_row = '<tr><td colspan="6">No rosters synced yet.</td></tr>'
+    return table_wrap(
+        f"<table><thead><tr><th>Team</th><th>W</th><th>L</th><th>T</th><th>PF</th><th>PA</th></tr></thead>"
+        f"<tbody>{row_html or no_rosters_row}</tbody></table>"
+    )
 
 
 def _priority_items(conn, leagues) -> str:
@@ -154,7 +204,7 @@ def _priority_items(conn, leagues) -> str:
         <div class="card">
           {player_cell(r['name'], r['position'])}
           <div class="flag-{'buy' if flag == 'buy_low' else 'sell'}">{flag.upper().replace('_', '-')}</div>
-          <p class="tag">{html.escape(reason)} · {format_badge(league['format'])} {html.escape(league['name'] or '')}</p>
+          <p class="tag">{html.escape(reason)} · <a href="/league/{quote(league['league_id'])}">{format_badge(league['format'])} {html.escape(league['name'] or '')}</a></p>
         </div>
         """)
     for league, r in adds[:6]:
@@ -162,7 +212,7 @@ def _priority_items(conn, leagues) -> str:
         <div class="card">
           {player_cell(r['name'], r['position'])}
           <div class="tag">Waiver add · recent avg {r['recent_avg']}</div>
-          <p class="tag">{format_badge(league['format'])} {html.escape(league['name'] or '')}</p>
+          <p class="tag"><a href="/league/{quote(league['league_id'])}">{format_badge(league['format'])} {html.escape(league['name'] or '')}</a></p>
         </div>
         """)
     return "".join(cards)
@@ -170,6 +220,7 @@ def _priority_items(conn, leagues) -> str:
 
 def _render_dashboard(conn, errors: list[str] | None = None) -> str:
     leagues = conn.execute("SELECT * FROM leagues ORDER BY platform, name").fetchall()
+    nav_html = _nav_html(conn)
 
     error_html = ""
     if errors:
@@ -179,7 +230,7 @@ def _render_dashboard(conn, errors: list[str] | None = None) -> str:
     sync_form = '<form method="post" action="/sync" onsubmit="this.querySelector(\'button\').disabled=true; this.querySelector(\'button\').textContent=\'Syncing…\';"><button type="submit">Sync Now</button></form>'
 
     if not leagues:
-        return _page("Dashboard", sync_form + error_html + "<p class='empty'>No leagues synced yet. Click Sync Now.</p>")
+        return _page("Dashboard", sync_form + error_html + "<p class='empty'>No leagues synced yet. Click Sync Now.</p>", nav_html=nav_html)
 
     tiles = "".join(
         [
@@ -195,34 +246,12 @@ def _render_dashboard(conn, errors: list[str] | None = None) -> str:
 
     sections = []
     for league in leagues:
-        rows = conn.execute(
-            """
-            SELECT r.wins, r.losses, r.ties, r.fpts, r.fpts_against,
-                   COALESCE(o.team_name, o.display_name, 'Roster ' || r.roster_id) AS team
-            FROM rosters r
-            LEFT JOIN owners o ON o.league_id = r.league_id AND o.owner_id = r.owner_id
-            WHERE r.league_id = ?
-            ORDER BY r.wins DESC, r.fpts DESC
-            """,
-            (league["league_id"],),
-        ).fetchall()
-
-        row_html = "".join(
-            f"<tr><td>{html.escape(str(r['team']))}</td><td>{r['wins']}</td><td>{r['losses']}</td>"
-            f"<td>{r['ties']}</td><td>{r['fpts']:.2f}</td><td>{r['fpts_against']:.2f}</td></tr>"
-            for r in rows
-        )
-        no_rosters_row = '<tr><td colspan="6">No rosters synced yet.</td></tr>'
-        table_html = table_wrap(
-            f"<table><thead><tr><th>Team</th><th>W</th><th>L</th><th>T</th><th>PF</th><th>PA</th></tr></thead>"
-            f"<tbody>{row_html or no_rosters_row}</tbody></table>"
-        )
         sections.append(f"""
         <section>
-          <h3>{html.escape(str(league['name'] or league['league_id']))}
+          <h3><a href="/league/{quote(league['league_id'])}">{html.escape(str(league['name'] or league['league_id']))}</a>
             {format_badge(league['format'])} <span class="tag">{html.escape(str(league['platform']))}</span>
           </h3>
-          {table_html}
+          {_standings_table_html(conn, league['league_id'])}
         </section>
         """)
 
@@ -233,7 +262,7 @@ def _render_dashboard(conn, errors: list[str] | None = None) -> str:
     <h2>Standings</h2>
     {''.join(sections)}
     """
-    return _page("Dashboard", sync_form + error_html + body)
+    return _page("Dashboard", sync_form + error_html + body, nav_html=nav_html)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -247,25 +276,45 @@ def dashboard(_user: str = Depends(require_auth), errors: str = Query(default=""
         conn.close()
 
 
-@app.get("/draft-board", response_class=HTMLResponse)
-def draft_board_page(
-    _user: str = Depends(require_auth), limit: int = Query(default=25), qb_mode: str = Query(default="1qb")
-):
-    if qb_mode not in ("1qb", "superflex"):
-        qb_mode = "1qb"
+@app.get("/league/{league_id}", response_class=HTMLResponse)
+def league_hub_page(league_id: str, _user: str = Depends(require_auth)):
     conn = db_module.get_connection()
     db_module.init_db(conn)
     try:
+        league = _get_league_or_404(conn, league_id)
+        nav_html = _nav_html(conn, league_id)
+        qb_mode = _qb_mode_for_league(conn, league_id)
+        standings_html = _standings_table_html(conn, league_id)
+    finally:
+        conn.close()
+
+    format_ = league["format"] or "redraft"
+    subnav = _tool_subnav(league_id, format_, current="")
+
+    body = f"""
+    {subnav}
+    <h2>{html.escape(str(league['name'] or league_id))}
+      {format_badge(format_)} <span class="tag">{qb_mode.upper()}</span>
+      <span class="tag">{html.escape(str(league['platform']))}</span>
+    </h2>
+    {standings_html}
+    """
+    return _page(str(league["name"] or league_id), body, nav_html=nav_html)
+
+
+@app.get("/league/{league_id}/draft-board", response_class=HTMLResponse)
+def draft_board_page(league_id: str, _user: str = Depends(require_auth), limit: int = Query(default=25)):
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+    try:
+        league = _get_league_or_404(conn, league_id)
+        nav_html = _nav_html(conn, league_id)
+        qb_mode = _qb_mode_for_league(conn, league_id)
         results = find_rank_inefficiencies(conn, limit=limit, qb_mode=qb_mode)
     finally:
         conn.close()
 
-    toggle = "".join(
-        f'<a class="{"active" if m == qb_mode else ""}" style="{"background:#2563eb;" if m == qb_mode else ""}" '
-        f'href="/draft-board?qb_mode={m}">{m.upper()}</a>'
-        for m in ("1qb", "superflex")
-    )
-    toggle = f'<div class="tabs">{toggle}</div>'
+    subnav = _tool_subnav(league_id, league["format"] or "redraft", current="draft-board")
 
     if not results:
         note = ""
@@ -284,27 +333,23 @@ def draft_board_page(
         <th>ESPN Rank ({qb_mode.upper()})</th><th>Delta</th><th>Note</th></tr></thead><tbody>{rows}</tbody></table>"""
         )
 
-    return _page("Draft Board", f"{toggle}<h2>Draft Board — Rank Inefficiencies</h2>{body}")
+    return _page("Draft Board", f"{subnav}<h2>Draft Board — Rank Inefficiencies ({qb_mode.upper()})</h2>{body}", nav_html=nav_html)
 
 
-@app.get("/waivers", response_class=HTMLResponse)
-def waivers_page(_user: str = Depends(require_auth), league_id: str | None = Query(default=None)):
+@app.get("/league/{league_id}/waivers", response_class=HTMLResponse)
+def waivers_page(league_id: str, _user: str = Depends(require_auth)):
     conn = db_module.get_connection()
     db_module.init_db(conn)
     try:
-        if not league_id:
-            row = conn.execute("SELECT league_id FROM leagues ORDER BY platform, name LIMIT 1").fetchone()
-            league_id = row["league_id"] if row else None
-
-        selector = _league_select(conn, league_id, "/waivers")
-        if not league_id:
-            return _page("Waivers/Trades", selector)
-
+        league = _get_league_or_404(conn, league_id)
+        nav_html = _nav_html(conn, league_id)
         my_owner_id = _my_owner_id_for(league_id)
         adds = top_waiver_adds(conn, league_id, my_owner_id=my_owner_id)
         targets = top_trade_targets(conn, league_id, my_owner_id=my_owner_id)
     finally:
         conn.close()
+
+    subnav = _tool_subnav(league_id, league["format"] or "redraft", current="waivers")
 
     personalization_note = (
         ""
@@ -334,34 +379,29 @@ def waivers_page(_user: str = Depends(require_auth), league_id: str | None = Que
         return table_wrap(f"<table><thead><tr>{header}</tr></thead><tbody>{rows}</tbody></table>")
 
     body = f"""
-    {selector}
+    {subnav}
     {personalization_note}
     <h2>Waiver Adds (available, trending up)</h2>
     {table(adds)}
     <h2>Trade Targets (rostered, trending up)</h2>
     {table(targets, extra_col="Owned By")}
     """
-    return _page("Waivers/Trades", body)
+    return _page("Waivers/Trades", body, nav_html=nav_html)
 
 
-@app.get("/buy-sell", response_class=HTMLResponse)
-def buy_sell_page(_user: str = Depends(require_auth), league_id: str | None = Query(default=None)):
+@app.get("/league/{league_id}/buy-sell", response_class=HTMLResponse)
+def buy_sell_page(league_id: str, _user: str = Depends(require_auth)):
     conn = db_module.get_connection()
     db_module.init_db(conn)
     try:
-        if not league_id:
-            row = conn.execute("SELECT league_id FROM leagues ORDER BY platform, name LIMIT 1").fetchone()
-            league_id = row["league_id"] if row else None
-
-        selector = _league_select(conn, league_id, "/buy-sell")
-        if not league_id:
-            return _page("Buy/Sell", selector)
-
+        league = _get_league_or_404(conn, league_id)
+        nav_html = _nav_html(conn, league_id)
         my_owner_id = _my_owner_id_for(league_id)
-        league = conn.execute("SELECT format FROM leagues WHERE league_id = ?", (league_id,)).fetchone()
-        results = find_buy_low_sell_high(conn, league_id, league["format"] if league else "redraft", my_owner_id=my_owner_id)
+        results = find_buy_low_sell_high(conn, league_id, league["format"] or "redraft", my_owner_id=my_owner_id)
     finally:
         conn.close()
+
+    subnav = _tool_subnav(league_id, league["format"] or "redraft", current="buy-sell")
 
     personalization_note = (
         ""
@@ -396,26 +436,21 @@ def buy_sell_page(_user: str = Depends(require_auth), league_id: str | None = Qu
             """)
         body = personalization_note + "".join(cards)
 
-    return _page("Buy/Sell", f"{selector}<h2>Buy-Low / Sell-High</h2>{body}")
+    return _page("Buy/Sell", f"{subnav}<h2>Buy-Low / Sell-High</h2>{body}", nav_html=nav_html)
 
 
-@app.get("/trade-analyzer", response_class=HTMLResponse)
+@app.get("/league/{league_id}/trade-analyzer", response_class=HTMLResponse)
 def trade_analyzer_page(
+    league_id: str,
     _user: str = Depends(require_auth),
-    league_id: str | None = Query(default=None),
     side_a: str = Query(default=""),
     side_b: str = Query(default=""),
 ):
     conn = db_module.get_connection()
     db_module.init_db(conn)
     try:
-        if not league_id:
-            row = conn.execute("SELECT league_id FROM leagues ORDER BY platform, name LIMIT 1").fetchone()
-            league_id = row["league_id"] if row else None
-
-        selector = _league_select(conn, league_id, "/trade-analyzer")
-        if not league_id:
-            return _page("Trade Analyzer", selector)
+        league = _get_league_or_404(conn, league_id)
+        nav_html = _nav_html(conn, league_id)
 
         result = None
         error = None
@@ -429,9 +464,10 @@ def trade_analyzer_page(
     finally:
         conn.close()
 
+    subnav = _tool_subnav(league_id, league["format"] or "redraft", current="trade-analyzer")
+
     form = f"""
-    <form method="get" action="/trade-analyzer">
-      <input type="hidden" name="league_id" value="{html.escape(league_id)}">
+    <form method="get" action="/league/{quote(league_id)}/trade-analyzer">
       <div style="display:flex; gap:1rem; flex-wrap:wrap;">
         <div style="flex:1; min-width:220px;">
           <label>Side A sends (one player per line)</label><br>
@@ -489,29 +525,25 @@ def trade_analyzer_page(
         <h3>{verdict}</h3>
         """
 
-    return _page("Trade Analyzer", f"{selector}<h2>Trade Analyzer</h2>{form}{result_html}")
+    return _page("Trade Analyzer", f"{subnav}<h2>Trade Analyzer</h2>{form}{result_html}", nav_html=nav_html)
 
 
-@app.get("/devy", response_class=HTMLResponse)
-def devy_page(_user: str = Depends(require_auth), qb_mode: str = Query(default="1qb")):
-    if qb_mode not in ("1qb", "superflex"):
-        qb_mode = "1qb"
+@app.get("/league/{league_id}/devy", response_class=HTMLResponse)
+def devy_page(league_id: str, _user: str = Depends(require_auth)):
     conn = db_module.get_connection()
     db_module.init_db(conn)
     try:
+        league = _get_league_or_404(conn, league_id)
+        nav_html = _nav_html(conn, league_id)
+        qb_mode = _qb_mode_for_league(conn, league_id)
         prospects = devy_module.list_prospects(conn, qb_mode=qb_mode)
     finally:
         conn.close()
 
-    toggle = "".join(
-        f'<a class="{"active" if m == qb_mode else ""}" style="{"background:#14b8a6;" if m == qb_mode else ""}" '
-        f'href="/devy?qb_mode={m}">{m.upper()}</a>'
-        for m in ("1qb", "superflex")
-    )
-    toggle = f'<div class="tabs">{toggle}</div>'
+    subnav = _tool_subnav(league_id, league["format"] or "redraft", current="devy")
 
     if not prospects:
-        body = f"{toggle}<p class='empty'>Watchlist is empty. Add prospects with the CLI: fantasy-assistant devy-add.</p>"
+        body = "<p class='empty'>Watchlist is empty. Add prospects with the CLI: fantasy-assistant devy-add.</p>"
     else:
         rows = "".join(
             f"<tr><td>{player_cell(p['full_name'], p['position'])}</td>"
@@ -524,10 +556,10 @@ def devy_page(_user: str = Depends(require_auth), qb_mode: str = Query(default="
             f"""<table><thead><tr><th>Name</th><th>College</th><th>Notes</th>
         <th>KTC Devy Value ({qb_mode.upper()})</th><th>KTC Devy Rank</th></tr></thead><tbody>{rows}</tbody></table>"""
         )
-        body = f"""{toggle}{table_html}
+        body = f"""{table_html}
         <p class='empty'>Manage the watchlist via CLI: fantasy-assistant devy-add / devy-remove.</p>"""
 
-    return _page("Devy Watchlist", f"<h2>Devy Watchlist</h2>{body}")
+    return _page("Devy Watchlist", f"{subnav}<h2>Devy Watchlist ({qb_mode.upper()})</h2>{body}", nav_html=nav_html)
 
 
 @app.post("/sync")

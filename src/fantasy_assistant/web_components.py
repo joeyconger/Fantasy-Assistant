@@ -87,6 +87,7 @@ nav a { font-size: 0.9rem; font-weight: 600; padding: var(--space-1) var(--space
         border-radius: 999px; background: var(--surface); border: 1px solid var(--border);
         white-space: nowrap; }
 nav a:hover { text-decoration: none; border-color: var(--accent); }
+nav a.active { color: #fff; border-color: transparent; }
 
 .tag { font-size: 0.75rem; font-weight: normal; color: var(--muted); }
 .empty { color: var(--muted); font-style: italic; padding: var(--space-2) 0; }

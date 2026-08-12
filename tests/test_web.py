@@ -89,3 +89,127 @@ def test_missing_dashboard_credentials_raises_on_import(monkeypatch):
 
     with pytest.raises(RuntimeError):
         importlib.reload(web_mod)
+
+
+def _seed_leagues(tmp_path):
+    conn = sqlite3.connect(tmp_path / "test.db")
+    conn.row_factory = sqlite3.Row
+    init_db(conn)
+    conn.execute(
+        "INSERT INTO leagues (league_id, platform, name, season, format, total_rosters, roster_positions) "
+        "VALUES ('REDRAFT1', 'sleeper', 'BMFS', '2026', 'redraft', 1, '[\"QB\",\"RB\",\"WR\"]')"
+    )
+    conn.execute(
+        "INSERT INTO leagues (league_id, platform, name, season, format, total_rosters, roster_positions) "
+        "VALUES ('DYNASTY1', 'sleeper', 'Weekend Warriors', '2026', 'dynasty', 1, '[\"QB\",\"RB\",\"WR\"]')"
+    )
+    conn.execute(
+        "INSERT INTO leagues (league_id, platform, name, season, format, total_rosters, roster_positions) "
+        "VALUES ('DEVY1', 'sleeper', 'Dollars for Devys', '2026', 'devy', 1, '[\"QB\",\"SUPER_FLEX\",\"RB\",\"WR\"]')"
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_league_hub_404s_for_unknown_league(web_app, tmp_path):
+    _seed_leagues(tmp_path)
+    client = TestClient(web_app.app)
+    resp = client.get("/league/NOPE", headers=_auth_header("testuser", "testpass"))
+    assert resp.status_code == 404
+
+
+def test_league_hub_shows_league_name_and_format(web_app, tmp_path):
+    _seed_leagues(tmp_path)
+    client = TestClient(web_app.app)
+    resp = client.get("/league/REDRAFT1", headers=_auth_header("testuser", "testpass"))
+    assert resp.status_code == 200
+    assert "BMFS" in resp.text
+    assert "1QB" in resp.text
+
+
+def test_league_hub_subnav_shows_draft_board_only_for_redraft(web_app, tmp_path):
+    _seed_leagues(tmp_path)
+    client = TestClient(web_app.app)
+    auth = _auth_header("testuser", "testpass")
+
+    redraft_resp = client.get("/league/REDRAFT1", headers=auth)
+    assert "Draft Board" in redraft_resp.text
+
+    dynasty_resp = client.get("/league/DYNASTY1", headers=auth)
+    assert "Draft Board" not in dynasty_resp.text
+
+
+def test_league_hub_subnav_shows_devy_watchlist_only_for_devy(web_app, tmp_path):
+    _seed_leagues(tmp_path)
+    client = TestClient(web_app.app)
+    auth = _auth_header("testuser", "testpass")
+
+    devy_resp = client.get("/league/DEVY1", headers=auth)
+    assert "Devy Watchlist" in devy_resp.text
+    assert "SUPERFLEX" in devy_resp.text
+
+    redraft_resp = client.get("/league/REDRAFT1", headers=auth)
+    assert "Devy Watchlist" not in redraft_resp.text
+
+
+def test_league_scoped_tool_pages_render(web_app, tmp_path):
+    _seed_leagues(tmp_path)
+    client = TestClient(web_app.app)
+    auth = _auth_header("testuser", "testpass")
+
+    for path in [
+        "/league/REDRAFT1/draft-board",
+        "/league/REDRAFT1/waivers",
+        "/league/REDRAFT1/buy-sell",
+        "/league/REDRAFT1/trade-analyzer",
+        "/league/DEVY1/devy",
+    ]:
+        resp = client.get(path, headers=auth)
+        assert resp.status_code == 200, f"{path} -> {resp.status_code}"
+
+
+def test_league_scoped_tool_page_404s_for_unknown_league(web_app, tmp_path):
+    _seed_leagues(tmp_path)
+    client = TestClient(web_app.app)
+    resp = client.get("/league/NOPE/waivers", headers=_auth_header("testuser", "testpass"))
+    assert resp.status_code == 404
+
+
+def test_old_flat_tool_routes_are_gone(web_app, tmp_path):
+    _seed_leagues(tmp_path)
+    client = TestClient(web_app.app)
+    auth = _auth_header("testuser", "testpass")
+    for path in ["/draft-board", "/waivers", "/buy-sell", "/trade-analyzer", "/devy"]:
+        resp = client.get(path, headers=auth)
+        assert resp.status_code == 404, f"{path} should be gone, got {resp.status_code}"
+
+
+def test_home_dashboard_links_into_league_hub(web_app, tmp_path):
+    _seed_leagues(tmp_path)
+    client = TestClient(web_app.app)
+    resp = client.get("/", headers=_auth_header("testuser", "testpass"))
+    assert resp.status_code == 200
+    assert "/league/REDRAFT1" in resp.text
+
+
+def test_standings_handles_null_points_before_any_games_played(web_app, tmp_path):
+    conn = sqlite3.connect(tmp_path / "test.db")
+    conn.row_factory = sqlite3.Row
+    init_db(conn)
+    conn.execute(
+        "INSERT INTO leagues (league_id, platform, name, season, format, total_rosters) "
+        "VALUES ('L1', 'sleeper', 'Fresh League', '2026', 'redraft', 1)"
+    )
+    conn.execute(
+        "INSERT INTO rosters (league_id, roster_id, owner_id, wins, losses, ties) "
+        "VALUES ('L1', '1', 'u1', 0, 0, 0)"
+    )
+    conn.commit()
+    conn.close()
+
+    client = TestClient(web_app.app)
+    auth = _auth_header("testuser", "testpass")
+    resp = client.get("/", headers=auth)
+    assert resp.status_code == 200
+    hub_resp = client.get("/league/L1", headers=auth)
+    assert hub_resp.status_code == 200

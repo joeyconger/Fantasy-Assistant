@@ -29,7 +29,9 @@ sleeper:
     my_owner_id: null
 
 espn:
-  league_id: "509682142"
+  league_id: "509682142"    # "Lads" — confirmed Superflex (auto-detected live from
+                             # synced roster_positions, not set here; qb_mode isn't
+                             # a config field for this reason)
   season: 2026
   private: true     # confirmed — cookies live in Railway env vars (ESPN_SWID/ESPN_S2),
                      # not here (config/secrets.yaml is for local runs only)
