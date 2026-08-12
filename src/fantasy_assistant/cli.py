@@ -14,6 +14,8 @@ from .platforms.espn.rankings import sync_player_pool as espn_sync_player_pool
 from .platforms.espn.sync import sync_league as espn_sync_league
 from .platforms.fantasypros.client import FantasyProsClient, FantasyProsFetchError, FantasyProsParseError
 from .platforms.fantasypros.sync import sync_rankings as fantasypros_sync_rankings
+from .platforms.ffc.client import FFCClient, FFCFetchError, FFCParseError
+from .platforms.ffc.sync import sync_adp as ffc_sync_adp
 from .platforms.ktc.client import KTCClient, KTCFetchError, KTCParseError
 from .platforms.ktc.sync import sync_values as ktc_sync_values
 from .analysis.sentiment import score_player_mentions
@@ -189,29 +191,29 @@ def sync_rankings_cmd():
 @click.option("--limit", default=25, help="How many top inefficiencies to show.")
 @click.option("--qb-mode", type=click.Choice(["1qb", "superflex"]), default="1qb")
 def draft_board_cmd(limit: int, qb_mode: str):
-    """Show players where Sleeper and ESPN rank/ADP disagree most — possible draft value."""
+    """Show players where market ADP (Fantasy Football Calculator) and ESPN rank disagree most — possible draft value."""
     conn = db_module.get_connection()
     results = find_rank_inefficiencies(conn, limit=limit, qb_mode=qb_mode)
     if not results:
-        msg = "No matched players with ranks from both platforms yet. Run sync-rankings first."
+        msg = "No matched players with both market ADP and ESPN ranks yet. Run sync-ffc-adp and sync-rankings first."
         if qb_mode == "superflex":
-            msg += " (Also possible: ESPN's data doesn't have a confirmed Superflex-specific rank — try --qb-mode 1qb.)"
+            msg += " (Also possible: ESPN or FFC don't have Superflex-specific data — try --qb-mode 1qb.)"
         click.echo(msg)
         return
 
     if qb_mode == "superflex" and any(r["position_relative"] for r in results):
         click.echo(
             "Note: RB/WR/TE/K ranks below are position rank (e.g. RB12), not overall rank — "
-            "Superflex crowds QBs to the top of ESPN's overall list, which would otherwise make "
+            "Superflex crowds QBs to the top of each source's overall list, which would otherwise make "
             "every other position look artificially crushed. QB still shows overall rank.\n"
         )
 
-    click.echo(f"{'Player':<25} {'Pos':<5} {'Sleeper':>8} {'ESPN':>8} {'Delta':>7}  Note")
+    click.echo(f"{'Player':<25} {'Pos':<5} {'ADP':>8} {'ESPN':>8} {'Delta':>7}  Note")
     for r in results:
-        sleeper_col = f"{r['position']}{r['sleeper_rank']}" if r["position_relative"] else str(r["sleeper_rank"])
+        adp_col = f"{r['position']}{r['adp_rank']}" if r["position_relative"] else str(r["adp_rank"])
         espn_col = f"{r['position']}{r['espn_rank']}" if r["position_relative"] else str(r["espn_rank"])
         click.echo(
-            f"{r['name']:<25} {r['position']:<5} {sleeper_col:>8} {espn_col:>8} "
+            f"{r['name']:<25} {r['position']:<5} {adp_col:>8} {espn_col:>8} "
             f"{r['delta']:>7}  {r['note']}"
         )
 
@@ -327,6 +329,27 @@ def sync_fantasypros_cmd(force: bool):
             "at the page structure. Paste this error back and it can be fixed."
         )
     click.echo(f"Synced {count} FantasyPros rankings." if count else "FantasyPros cache fresh (<12h) — skipped. Use --force.")
+
+
+@cli.command("sync-ffc-adp")
+@click.option("--qb-mode", type=click.Choice(["1qb", "superflex"]), default="1qb")
+@click.option("--teams", default=12, help="League size FFC's ADP is drawn from.")
+@click.option("--force", is_flag=True)
+def sync_ffc_adp_cmd(qb_mode: str, teams: int, force: bool):
+    """Sync real redraft ADP from Fantasy Football Calculator (UNVERIFIED — see platforms/ffc/client.py). Used by draft-board in place of Sleeper's search_rank."""
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+    client = FFCClient()
+    try:
+        count = ffc_sync_adp(conn, client, qb_mode=qb_mode, teams=teams, force=force)
+    except FFCFetchError as exc:
+        raise click.ClickException(f"Couldn't reach Fantasy Football Calculator: {exc}")
+    except FFCParseError as exc:
+        raise click.ClickException(
+            f"{exc}\n\nThis was never tested against the live API — the parser needs a real look "
+            "at the response shape. Paste this error back and it can be fixed."
+        )
+    click.echo(f"Synced {count} {qb_mode} ADP entries from FFC." if count else "FFC ADP cache fresh (<12h) — skipped. Use --force.")
 
 
 @cli.command("sync-reddit")

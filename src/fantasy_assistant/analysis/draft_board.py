@@ -1,13 +1,19 @@
-"""Finds "inefficiencies" — players where Sleeper and ESPN disagree sharply
-on overall rank. A big gap means one platform's ADP/rank has this player
-priced very differently than the other's, which is a real signal for value
-picks in whichever draft uses the lower-ranking source.
+"""Finds "inefficiencies" — players where real market ADP (Fantasy Football
+Calculator) and ESPN disagree sharply on overall rank. A big gap means
+ESPN's draft rank has this player priced very differently than the broader
+market does, which is a real signal for value picks in an ESPN draft.
 
-Both platforms' raw ranks are clipped to a shared top-N before comparing.
-Sleeper's search_rank spans its entire ~12,000-player pool while ESPN's pool
-here is filtered to ~2,000 — comparing raw ordinals across mismatched-size
-universes would produce meaningless deltas out past the draftable range, so
-we only compare players both sources consider draft-relevant.
+The market-ADP side deliberately isn't Sleeper's own `search_rank`: that
+field is Sleeper's interest/search-volume ranking, not a real draft
+position — a hyped rookie can rank far above his actual redraft value
+there just from search traffic. Fantasy Football Calculator aggregates
+real draft picks instead (see platforms/ffc/), which is what "ADP" is
+supposed to mean. Dynasty startup ADP is out of scope here by decision —
+this tool only covers redraft.
+
+Both sources' raw ranks are clipped to a shared top-N before comparing —
+comparing raw ordinals past the draftable range would produce meaningless
+deltas, so we only compare players both sources consider draft-relevant.
 
 Defensive players are excluded outright — none of these leagues play IDP,
 and defense valuation logic doesn't belong in a skill-position
@@ -18,18 +24,16 @@ that label mismatch already keeps them from matching. This filter is real
 protection only for individual defensive positions (DT/LB/CB/...), where
 both platforms may use the same abbreviation.
 
-Superflex QB-crowding confound: Sleeper's search_rank has no Superflex-aware
-ordering (see roster_format.py), but ESPN's Superflex rank type genuinely
-re-sorts its whole pool around Superflex QB scarcity — every QB jumps way up
-the overall list, which mechanically pushes every RB/WR/TE/K down in overall
-rank even though their value *relative to their own position* barely moved.
-Comparing raw overall rank in that situation produces huge, fake deltas for
-non-QB players that are really just measuring "how many QBs ESPN now ranks
-above this guy," not a real market disagreement. QB is the one position
-where that overall-rank shift *is* the real Superflex signal, so QB keeps
-using overall rank; every other position switches to within-position rank
-(RB vs RB, WR vs WR, ...) in Superflex mode, which stays stable across
-formats since Superflex doesn't reshuffle RBs against other RBs.
+Superflex QB-crowding: both ESPN's Superflex rank type and FFC's "2qb" ADP
+type independently re-sort their pools around Superflex QB scarcity, and
+there's no guarantee they crowd QBs to the same degree — comparing raw
+overall rank could still produce deltas that are really just measuring "how
+many QBs each source ranks above this guy" rather than a real disagreement.
+QB is the one position where that overall-rank shift *is* the real
+Superflex signal, so QB keeps using overall rank; every other position
+switches to within-position rank (RB vs RB, WR vs WR, ...) in Superflex
+mode, which stays comparable across sources regardless of how aggressively
+each one reprices QBs.
 """
 
 from __future__ import annotations
@@ -56,6 +60,19 @@ def _rank_map(conn: sqlite3.Connection, platform: str, source: str) -> dict[str,
         (platform, source),
     ).fetchall()
     return {row["player_id"]: row["overall_rank"] for row in rows}
+
+
+def _adp_rank_map(conn: sqlite3.Connection, qb_mode: str) -> dict[tuple[str, str], int]:
+    """FFC's ADP, keyed by (normalized_name, position) since FFC has no
+    shared player ID with Sleeper/ESPN — matched at query time the same way
+    KTC/FantasyPros are, by reusing the already-normalized name from
+    match_players()'s key."""
+    rows = conn.execute(
+        "SELECT normalized_name, position, overall_rank FROM draft_adp "
+        "WHERE source = 'ffc' AND qb_mode = ? AND overall_rank IS NOT NULL",
+        (qb_mode,),
+    ).fetchall()
+    return {(row["normalized_name"], row["position"] or ""): row["overall_rank"] for row in rows}
 
 
 def _position_rank_map(conn: sqlite3.Connection, platform: str, rank_map: dict[str, int]) -> dict[str, int]:
@@ -90,21 +107,37 @@ def _position_rank_map(conn: sqlite3.Connection, platform: str, rank_map: dict[s
     return result
 
 
+def _position_rank_map_by_key(rank_map: dict[tuple[str, str], int]) -> dict[tuple[str, str], int]:
+    """Same idea as _position_rank_map, but for (normalized_name, position)
+    keyed sources like FFC's ADP table, where position is already part of
+    the key — no extra query needed to look positions up."""
+    buckets: dict[str, list[tuple[int, tuple[str, str]]]] = {}
+    for key, rank in rank_map.items():
+        _, position = key
+        buckets.setdefault(position, []).append((rank, key))
+
+    result: dict[tuple[str, str], int] = {}
+    for position_ranks in buckets.values():
+        position_ranks.sort()
+        for position_rank, (_, key) in enumerate(position_ranks, start=1):
+            result[key] = position_rank
+    return result
+
+
 def find_rank_inefficiencies(
     conn: sqlite3.Connection, limit: int = 25, rank_cap: int = DEFAULT_RANK_CAP, qb_mode: str = "1qb"
 ) -> list[dict]:
     """qb_mode='superflex' compares against ESPN's Superflex-specific rank
-    (espn_superflex_rank) if any was found during sync — see espn/rankings.py
-    for why that's not guaranteed to exist. Sleeper's search_rank doesn't
-    differentiate by qb_mode at all, so the Sleeper side is unaffected by
-    this parameter either way — see the module docstring for how that's
-    handled for non-QB positions."""
+    (espn_superflex_rank) and FFC's "2qb" ADP type, if either was found
+    during sync — see espn/rankings.py and platforms/ffc/ for why neither
+    is guaranteed to exist. See the module docstring for the QB-crowding
+    handling on non-QB positions."""
     espn_source = "espn_superflex_rank" if qb_mode == "superflex" else "espn_standard_rank"
-    sleeper_ranks = _rank_map(conn, "sleeper", "sleeper_search_rank")
     espn_ranks = _rank_map(conn, "espn", espn_source)
+    adp_ranks = _adp_rank_map(conn, qb_mode)
 
-    sleeper_position_ranks = _position_rank_map(conn, "sleeper", sleeper_ranks) if qb_mode == "superflex" else {}
     espn_position_ranks = _position_rank_map(conn, "espn", espn_ranks) if qb_mode == "superflex" else {}
+    adp_position_ranks = _position_rank_map_by_key(adp_ranks) if qb_mode == "superflex" else {}
 
     matches = match_players(conn, "sleeper", "espn")
 
@@ -113,37 +146,38 @@ def find_rank_inefficiencies(
         if m["position"] in DEFENSIVE_POSITIONS:
             continue
 
-        sleeper_overall = sleeper_ranks.get(m["a_player_id"])
+        name_key = (m["name"], m["position"])
+        adp_overall = adp_ranks.get(name_key)
         espn_overall = espn_ranks.get(m["b_player_id"])
-        if sleeper_overall is None or espn_overall is None:
+        if adp_overall is None or espn_overall is None:
             continue
-        if sleeper_overall > rank_cap or espn_overall > rank_cap:
+        if adp_overall > rank_cap or espn_overall > rank_cap:
             continue
 
         position_relative = qb_mode == "superflex" and m["position"] in POSITION_RELATIVE_IN_SUPERFLEX
         if position_relative:
-            sleeper_rank = sleeper_position_ranks.get(m["a_player_id"], sleeper_overall)
+            adp_rank = adp_position_ranks.get(name_key, adp_overall)
             espn_rank = espn_position_ranks.get(m["b_player_id"], espn_overall)
         else:
-            sleeper_rank = sleeper_overall
+            adp_rank = adp_overall
             espn_rank = espn_overall
 
-        delta = sleeper_rank - espn_rank
+        delta = adp_rank - espn_rank
         if position_relative:
             note = (
-                f"ESPN ranks this {m['position']} higher among {m['position']}s (Superflex-adjusted, QB-crowding removed)"
+                f"ESPN ranks this {m['position']} higher among {m['position']}s than market ADP does (Superflex-adjusted)"
                 if delta > 0
-                else f"Sleeper implies a higher {m['position']} rank among {m['position']}s (Superflex-adjusted, QB-crowding removed)"
+                else f"Market ADP ranks this {m['position']} higher among {m['position']}s than ESPN does (Superflex-adjusted)"
                 if delta < 0
                 else f"Ranked evenly among {m['position']}s"
             )
         else:
             note = (
-                "ESPN values higher (Sleeper drafters may get value)"
+                "ESPN ranks him well above market ADP (likely to go earlier in an ESPN draft than the market expects)"
                 if delta > 0
-                else "Sleeper values higher (ESPN drafters may get value)"
+                else "Market ADP ranks him well above ESPN (possible value pick in an ESPN draft)"
                 if delta < 0
-                else "Ranked evenly"
+                else "Ranked evenly with market ADP"
             )
 
         results.append(
@@ -152,7 +186,7 @@ def find_rank_inefficiencies(
                 "position": m["position"],
                 "sleeper_player_id": m["a_player_id"],
                 "espn_player_id": m["b_player_id"],
-                "sleeper_rank": sleeper_rank,
+                "adp_rank": adp_rank,
                 "espn_rank": espn_rank,
                 "position_relative": position_relative,
                 "delta": delta,

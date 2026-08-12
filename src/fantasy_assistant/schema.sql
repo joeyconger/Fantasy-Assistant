@@ -165,6 +165,33 @@ CREATE TABLE IF NOT EXISTS expert_rankings_cache_meta (
     PRIMARY KEY (source, format)
 );
 
+-- Real average draft position from Fantasy Football Calculator's public
+-- API — actual draft-pick data, unlike Sleeper's search_rank (an interest/
+-- search-volume metric, not a true ADP). Used by the redraft draft board
+-- in place of sleeper_search_rank. Keyed by normalized_name+position like
+-- expert_rankings/market_values, since FFC has no shared player ID with
+-- Sleeper/ESPN either. qb_mode splits 1QB vs Superflex ADP, same as
+-- market_values, since FFC publishes separate lists for each.
+CREATE TABLE IF NOT EXISTS draft_adp (
+    source TEXT NOT NULL,            -- 'ffc'
+    qb_mode TEXT NOT NULL,           -- '1qb' | 'superflex'
+    normalized_name TEXT NOT NULL,
+    full_name TEXT,
+    position TEXT,
+    team TEXT,
+    overall_rank INTEGER,            -- 1-indexed rank derived from FFC's ADP sort order
+    adp REAL,                        -- raw average draft position (e.g. 12.3)
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (source, qb_mode, normalized_name, position)
+);
+
+CREATE TABLE IF NOT EXISTS draft_adp_cache_meta (
+    source TEXT NOT NULL,
+    qb_mode TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (source, qb_mode)
+);
+
 -- Basic mention/sentiment counts from Reddit (see analysis/sentiment.py for
 -- the scoring method — lexicon-based, not NLP).
 CREATE TABLE IF NOT EXISTS player_sentiment (

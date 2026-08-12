@@ -319,19 +319,19 @@ def draft_board_page(league_id: str, _user: str = Depends(require_auth), limit: 
     if not results:
         note = ""
         if qb_mode == "superflex":
-            note = "<p class='empty'>(Also possible: ESPN's data doesn't have a confirmed Superflex-specific rank yet.)</p>"
-        body = f"<p class='empty'>No matched players with ranks from both platforms yet. Run sync-rankings.</p>{note}"
+            note = "<p class='empty'>(Also possible: ESPN or FFC don't have Superflex-specific data yet.)</p>"
+        body = f"<p class='empty'>No matched players with both market ADP and ESPN ranks yet. Run sync-ffc-adp and sync-rankings.</p>{note}"
     else:
         def _rank_cell(r):
             if r["position_relative"]:
-                return f"{html.escape(r['position'])}{r['sleeper_rank']}", f"{html.escape(r['position'])}{r['espn_rank']}"
-            return str(r["sleeper_rank"]), str(r["espn_rank"])
+                return f"{html.escape(r['position'])}{r['adp_rank']}", f"{html.escape(r['position'])}{r['espn_rank']}"
+            return str(r["adp_rank"]), str(r["espn_rank"])
 
         def _row_html(r):
-            sleeper_cell, espn_cell = _rank_cell(r)
+            adp_cell, espn_cell = _rank_cell(r)
             return (
                 f"<tr><td>{player_cell(r['name'], r['position'])}</td>"
-                f"<td>{sleeper_cell}</td><td>{espn_cell}</td><td>{r['delta']:+}</td>"
+                f"<td>{adp_cell}</td><td>{espn_cell}</td><td>{r['delta']:+}</td>"
                 f"<td>{html.escape(r['note'])}</td></tr>"
             )
 
@@ -345,7 +345,7 @@ def draft_board_page(league_id: str, _user: str = Depends(require_auth), limit: 
             else ""
         )
         body = rank_note + table_wrap(
-            f"""<table><thead><tr><th>Player</th><th>Sleeper Rank</th>
+            f"""<table><thead><tr><th>Player</th><th>Market ADP</th>
         <th>ESPN Rank ({qb_mode.upper()})</th><th>Delta</th><th>Note</th></tr></thead><tbody>{rows}</tbody></table>"""
         )
 

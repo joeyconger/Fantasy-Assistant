@@ -32,6 +32,16 @@ def _add_player(conn, player_id, platform, name, position, team="CIN"):
     )
 
 
+def _add_adp(conn, name, position, qb_mode, overall_rank, team="CIN"):
+    from fantasy_assistant.platforms.matching import normalize_name
+
+    conn.execute(
+        "INSERT INTO draft_adp (source, qb_mode, normalized_name, full_name, position, team, overall_rank, adp, fetched_at) "
+        "VALUES ('ffc', ?, ?, ?, ?, ?, ?, ?, ?)",
+        (qb_mode, normalize_name(name), name, position, team, overall_rank, float(overall_rank), NOW),
+    )
+
+
 # ---- draft_board ----
 
 
@@ -40,16 +50,16 @@ def test_find_rank_inefficiencies_flags_big_divergence(conn):
 
     _add_player(conn, "1", "sleeper", "Player A", "WR")
     _add_player(conn, "9", "espn", "Player A", "WR")
-    conn.execute("INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES ('1','sleeper','sleeper_search_rank',5,?)", (NOW,))
+    _add_adp(conn, "Player A", "WR", "1qb", 5)
     conn.execute("INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES ('9','espn','espn_standard_rank',80,?)", (NOW,))
     conn.commit()
 
     results = find_rank_inefficiencies(conn)
     assert len(results) == 1
     assert results[0]["delta"] == 5 - 80
-    # Sleeper rank 5 vs ESPN rank 80: Sleeper values this player far higher,
-    # so an ESPN-league drafter could get him later than his "true" value.
-    assert "ESPN drafters may get value" in results[0]["note"]
+    # Market ADP rank 5 vs ESPN rank 80: the market values this player far
+    # higher, so an ESPN-league drafter could get him later than his "true" value.
+    assert "Market ADP ranks him well above ESPN" in results[0]["note"]
 
 
 def test_find_rank_inefficiencies_qb_mode_uses_correct_espn_source(conn):
@@ -57,7 +67,11 @@ def test_find_rank_inefficiencies_qb_mode_uses_correct_espn_source(conn):
 
     _add_player(conn, "1", "sleeper", "Player QB", "QB")
     _add_player(conn, "9", "espn", "Player QB", "QB")
-    conn.execute("INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES ('1','sleeper','sleeper_search_rank',20,?)", (NOW,))
+    # Same ADP value inserted for both qb_modes here, to isolate this test
+    # to just the ESPN source switching — FFC's ADP is itself qb_mode-aware
+    # (separate real endpoints per mode), unlike the old sleeper_search_rank.
+    _add_adp(conn, "Player QB", "QB", "1qb", 20)
+    _add_adp(conn, "Player QB", "QB", "superflex", 20)
     conn.execute("INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES ('9','espn','espn_standard_rank',60,?)", (NOW,))
     conn.execute("INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES ('9','espn','espn_superflex_rank',22,?)", (NOW,))
     conn.commit()
@@ -67,8 +81,7 @@ def test_find_rank_inefficiencies_qb_mode_uses_correct_espn_source(conn):
 
     assert one_qb[0]["espn_rank"] == 60
     assert sf[0]["espn_rank"] == 22
-    # Sleeper side is qb-agnostic and identical either way.
-    assert one_qb[0]["sleeper_rank"] == sf[0]["sleeper_rank"] == 20
+    assert one_qb[0]["adp_rank"] == sf[0]["adp_rank"] == 20
 
 
 def test_find_rank_inefficiencies_superflex_empty_when_no_espn_superflex_data(conn):
@@ -76,7 +89,7 @@ def test_find_rank_inefficiencies_superflex_empty_when_no_espn_superflex_data(co
 
     _add_player(conn, "1", "sleeper", "Player A", "WR")
     _add_player(conn, "9", "espn", "Player A", "WR")
-    conn.execute("INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES ('1','sleeper','sleeper_search_rank',5,?)", (NOW,))
+    _add_adp(conn, "Player A", "WR", "1qb", 5)
     conn.execute("INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES ('9','espn','espn_standard_rank',80,?)", (NOW,))
     conn.commit()
 
@@ -90,7 +103,7 @@ def test_find_rank_inefficiencies_excludes_defensive_positions(conn):
 
     _add_player(conn, "1", "sleeper", "Some Defense", "D/ST")
     _add_player(conn, "9", "espn", "Some Defense", "D/ST")
-    conn.execute("INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES ('1','sleeper','sleeper_search_rank',50,?)", (NOW,))
+    _add_adp(conn, "Some Defense", "D/ST", "1qb", 50)
     conn.execute("INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES ('9','espn','espn_standard_rank',200,?)", (NOW,))
     conn.commit()
 
@@ -98,18 +111,20 @@ def test_find_rank_inefficiencies_excludes_defensive_positions(conn):
 
 
 def test_find_rank_inefficiencies_superflex_uses_position_rank_for_non_qb(conn):
-    """Sleeper's search_rank has no Superflex-aware ordering, but ESPN's
-    Superflex rank type genuinely crowds QBs to the top — comparing raw
-    overall rank for a RB in that situation would produce a huge fake delta
-    driven entirely by how many QBs ESPN now ranks above him, not a real
-    disagreement. Set up a pool where that crowding is obvious and confirm
-    the RB's delta reflects position rank, not the crushed overall rank."""
+    """ESPN's Superflex rank type genuinely crowds QBs to the top of its
+    pool. Even with market ADP (FFC) also being Superflex-aware, there's no
+    guarantee both sources crowd QBs to the same degree — comparing raw
+    overall rank for a RB in that situation could still produce a fake delta
+    driven by how many QBs each source ranks above him, not a real
+    disagreement. Set up a pool where ESPN crowds QBs harder than ADP does
+    and confirm the RB's delta reflects position rank, not the crushed
+    overall rank."""
     from fantasy_assistant.analysis.draft_board import find_rank_inefficiencies
 
     _add_player(conn, "rb_a", "sleeper", "Value RB", "RB")
     _add_player(conn, "rb_b", "espn", "Value RB", "RB")
-    # Sleeper: this RB is the best RB in its pool (overall rank 10, position rank 1).
-    conn.execute("INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES ('rb_a','sleeper','sleeper_search_rank',10,?)", (NOW,))
+    # Market ADP: this RB is the best RB in its pool (overall rank 10, position rank 1).
+    _add_adp(conn, "Value RB", "RB", "superflex", 10)
     # ESPN Superflex: same RB is still the best RB (position rank 1), but a
     # wave of QBs crowded above it drags its overall rank down to 90.
     conn.execute("INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES ('rb_b','espn','espn_superflex_rank',90,?)", (NOW,))
@@ -117,10 +132,7 @@ def test_find_rank_inefficiencies_superflex_uses_position_rank_for_non_qb(conn):
         qb_sleeper_id, qb_espn_id = f"qb_s{i}", f"qb_e{i}"
         _add_player(conn, qb_sleeper_id, "sleeper", f"Filler QB {i}", "QB")
         _add_player(conn, qb_espn_id, "espn", f"Filler QB {i}", "QB")
-        conn.execute(
-            "INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES (?,'sleeper','sleeper_search_rank',?,?)",
-            (qb_sleeper_id, 200 + i, NOW),
-        )
+        _add_adp(conn, f"Filler QB {i}", "QB", "superflex", 150 + i)
         conn.execute(
             "INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES (?,'espn','espn_superflex_rank',?,?)",
             (qb_espn_id, i + 1, NOW),
@@ -132,7 +144,7 @@ def test_find_rank_inefficiencies_superflex_uses_position_rank_for_non_qb(conn):
     assert rb_result["position_relative"] is True
     # Both sides rank this RB #1 at its position — position-rank delta is 0,
     # not the huge fake delta raw overall rank (10 - 90 = -80) would show.
-    assert rb_result["sleeper_rank"] == 1
+    assert rb_result["adp_rank"] == 1
     assert rb_result["espn_rank"] == 1
     assert rb_result["delta"] == 0
 
@@ -142,7 +154,7 @@ def test_find_rank_inefficiencies_excludes_players_past_rank_cap(conn):
 
     _add_player(conn, "1", "sleeper", "Deep Bench Guy", "WR")
     _add_player(conn, "9", "espn", "Deep Bench Guy", "WR")
-    conn.execute("INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES ('1','sleeper','sleeper_search_rank',5000,?)", (NOW,))
+    _add_adp(conn, "Deep Bench Guy", "WR", "1qb", 5000)
     conn.execute("INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES ('9','espn','espn_standard_rank',10,?)", (NOW,))
     conn.commit()
 

@@ -14,10 +14,11 @@ Railway) as a small shared web dashboard with a Sleeper/ESPN-app-style design
 | Sleeper sync (leagues, rosters, standings, players) | ✅ **Verified live** — all 3 leagues sync correctly |
 | ESPN league sync (rosters, standings) | ✅ **Verified live** — private league, cookies working |
 | Web dashboard + Railway deploy | ✅ **Deployed and live**, shared login |
-| Sleeper rank data (`search_rank`) | ✅ Verified live (part of the already-proven player sync) |
+| Sleeper rank data (`search_rank`) | ✅ Verified live (part of the already-proven player sync). Still used by waiver-targets/roster-needs — but no longer by the draft board, see below. |
 | ESPN full player-pool rankings/ADP | ✅ **Verified live** — 2918 players synced, correct rank/ADP order (Gibbs #1, Bijan #2, Puka #3 — matches real ADP). |
 | — 1QB vs Superflex split | ✅ **Verified live** — ESPN's payload genuinely has a distinct Superflex rank type (unconfirmed until tested; turned out to exist). Confirmed meaningful, not noise: nearly every top-25 Superflex divergence is a QB valued much higher by ESPN in that mode, exactly the expected real-world pattern. |
-| Draft board (rank inefficiency finder) | ✅ **Verified live**, both qb_modes, real divergent players in each. |
+| Fantasy Football Calculator (FFC) real ADP | ⚠️ **UNVERIFIED** — `platforms/ffc/`. Replaces Sleeper's `search_rank` on the draft board specifically, since search_rank turned out to be an interest/search-volume metric, not real ADP (a hyped rookie QB was ranking above an established veteran on search_rank alone). FFC's free public REST API returns real draft-pick ADP instead; needs `sync-ffc-adp` run live to confirm the response shape matches what's assumed. |
+| Draft board (rank inefficiency finder) | ⚠️ Previously verified live against Sleeper vs ESPN; now re-anchored to FFC market ADP vs ESPN (see above) and not yet re-verified live in that form. Run `sync-ffc-adp` + `draft-board` and check the numbers look sane. |
 | Weekly performance trend (Sleeper matchups) | ⚠️ Built + tested; no real games played yet this season to sync (it's August) |
 | Waiver/trade target identifier | ✅ Platform-awareness bug fixed and verified (Sleeper and ESPN both); still needs real weekly-points data to say anything — no games played yet this season |
 | KeepTradeCut (KTC) scraper | ✅ **Verified live** — dynasty and devy, both 1QB and Superflex confirmed with real player data (Ja'Marr Chase, Bijan Robinson, Jeremiah Smith, Arch Manning, etc., sane values). Fixed a real bug found during verification: KTC nests both qb_modes per-record (`oneQBValues`/`superflexValues`), not flat top-level fields — the original `?format=2` URL guess was wrong and unnecessary, one page load has both. |
@@ -28,12 +29,13 @@ Railway) as a small shared web dashboard with a Sleeper/ESPN-app-style design
 | Buy-low/sell-high engine | ⚠️ Combines the above signals correctly (verified via synthetic data + now real KTC + FantasyPros data). Still needs weekly-points data to say anything for a given league — no games played yet this season. |
 | Devy watchlist | ✅ Fully built and tested (it's just a manual list — no external dependency), and now cross-references real KTC devy values |
 
-**Bottom line**: every data source except Reddit (out of scope) and
-X/Twitter (skipped) is verified live — Sleeper, ESPN (league sync +
-player-pool rankings, both qb_modes), KTC, and FantasyPros. Phase A
-(functional gaps) is complete. Phase B (design polish + personalization +
-trade analyzer) is also complete. What's left is real weekly-points data,
-which just needs the season to start.
+**Bottom line**: every data source except Reddit (out of scope), X/Twitter
+(skipped), and the newly-added FFC ADP (not yet live-verified) is verified
+live — Sleeper, ESPN (league sync + player-pool rankings, both qb_modes),
+KTC, and FantasyPros. Phase A (functional gaps) is complete. Phase B
+(design polish + personalization + trade analyzer) is also complete. What's
+left is real weekly-points data (just needs the season to start) and
+live-verifying `sync-ffc-adp`.
 
 ## Phase B: design polish + features — complete
 
@@ -139,6 +141,36 @@ any real disagreement.
 `test_find_rank_inefficiencies_superflex_uses_position_rank_for_non_qb` and
 `test_find_rank_inefficiencies_excludes_defensive_positions`.
 
+## Draft Board: real ADP (FFC) instead of Sleeper's search_rank
+
+Found from another real live run: the draft board showed a hyped rookie QB
+(Fernando Mendoza) ranked well above an established veteran (Baker Mayfield)
+on the "Sleeper" side — 39 vs 64. That wasn't a bug in the matching logic;
+it's genuinely what Sleeper's `search_rank` says. The problem is what
+`search_rank` actually measures: it's Sleeper's own interest/search-volume
+ranking (how much people are searching/interacting with a player on
+Sleeper), not a real average draft position. A hyped rookie can spike that
+metric from pure attention, especially on Sleeper's dynasty-heavy userbase,
+without reflecting real redraft startable value.
+
+**Fix**: swapped the "market" side of the draft board from Sleeper's
+`search_rank` to real ADP from Fantasy Football Calculator's free public
+API (`platforms/ffc/`) — actual aggregated draft-pick data, not an interest
+metric. `sync-ffc-adp --qb-mode 1qb` hits FFC's `ppr` ADP list, `--qb-mode
+superflex` hits their `2qb` list. Values are matched into the draft board
+by normalized name+position (FFC has no shared player ID with Sleeper/ESPN
+either), the same way KTC/FantasyPros are — see the new `draft_adp` table.
+Dynasty startup ADP is explicitly out of scope (disregarded by decision);
+this only covers redraft.
+
+The web/CLI column previously labeled "Sleeper Rank" is now "Market ADP" /
+"ADP" — an honest label, since this isn't Sleeper-specific data anymore.
+
+**UNVERIFIED**: this sandbox can't reach fantasyfootballcalculator.com, so
+the client's assumed response shape (`platforms/ffc/client.py`) hasn't been
+tested against the real API. Run `fantasy-assistant sync-ffc-adp` locally —
+an `FFCParseError` means the assumption is wrong and needs a real look.
+
 ## Setup
 
 ```powershell
@@ -155,15 +187,17 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-97 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
+110 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
 the private-league auth path, the players table's platform-scoped primary
 key (prevents Sleeper/ESPN ID collisions), cross-platform name matching
 (suffixes, punctuation, ambiguous-duplicate handling), the rank-inefficiency
-engine, performance trend math, waiver/trade filtering, the buy-low/sell-high
-flag logic, KTC/FantasyPros parser strategies against synthetic HTML, Reddit
-sentiment scoring, the devy watchlist, roster-needs gap analysis, the trade
-analyzer, the design-system component helpers (XSS-escaping), and the web
-dashboard (auth gating, XSS-escaping, missing-env-var fail-fast).
+engine (including the Superflex QB-crowding position-relative fix and FFC
+ADP integration), performance trend math, waiver/trade filtering, the
+buy-low/sell-high flag logic, KTC/FantasyPros/FFC parser strategies against
+synthetic HTML/JSON, Reddit sentiment scoring, the devy watchlist,
+roster-needs gap analysis, the trade analyzer, the design-system component
+helpers (XSS-escaping), and the web dashboard (auth gating, XSS-escaping,
+missing-env-var fail-fast).
 
 What tests can't cover: whether the *real* KTC/FantasyPros pages match the
 HTML/JSON shapes the parsers assume, and whether Reddit's API behaves as
@@ -177,11 +211,12 @@ fantasy-assistant sync-rankings     # just the rank/ADP data (Sleeper + ESPN)
 fantasy-assistant sync-weekly-points 1389373095143284736   # this week's + recent points (needs games played)
 fantasy-assistant sync-ktc --format dynasty --qb-mode 1qb   # or --format devy, --qb-mode superflex
 fantasy-assistant sync-fantasypros
+fantasy-assistant sync-ffc-adp --qb-mode 1qb        # or --qb-mode superflex; real ADP for the draft board
 fantasy-assistant sync-reddit       # needs REDDIT_CLIENT_ID/SECRET env vars first
 
 fantasy-assistant standings 1389373095143284736
 fantasy-assistant owners 1389373095143284736                      # find your owner_id for personalization
-fantasy-assistant draft-board                                    # Sleeper vs ESPN rank divergence
+fantasy-assistant draft-board                                    # market ADP (FFC) vs ESPN rank divergence
 fantasy-assistant waiver-targets 1389373095143284736              # available players trending up
 fantasy-assistant trade-targets 1389373095143284736               # rostered players trending up
 fantasy-assistant buy-sell 1389373095143284736                    # the composite engine (auto-detects 1QB/Superflex)
@@ -317,7 +352,7 @@ src/fantasy_assistant/
   db.py                        # SQLite connection/init
   schema.sql                    # all table definitions, heavily commented
   analysis/                   # cross-cutting logic (not platform-specific)
-    draft_board.py             # Sleeper vs ESPN rank inefficiency
+    draft_board.py             # market ADP (FFC) vs ESPN rank inefficiency
     performance_trend.py        # recent vs season points
     waiver_targets.py            # available/rostered players trending up
     buy_low_sell_high.py          # the composite engine
@@ -331,6 +366,7 @@ src/fantasy_assistant/
     espn/                       # client, sync, rankings, constants
     ktc/                        # client (verified live), sync
     fantasypros/                # client (verified live), sync
+    ffc/                        # client (UNVERIFIED), sync — real ADP for the draft board
     reddit/                     # client (UNTESTED - needs credentials), sync
-tests/                        # 97 tests, see "Run the tests" above
+tests/                        # 110 tests, see "Run the tests" above
 ```
