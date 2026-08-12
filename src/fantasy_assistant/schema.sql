@@ -206,6 +206,15 @@ CREATE TABLE IF NOT EXISTS player_sentiment (
     PRIMARY KEY (normalized_name, source)
 );
 
+-- Single-row cache guard for sync-reddit, same shape as players_cache_meta
+-- (one global sync, not scoped per format/qb_mode like KTC/FantasyPros/FFC).
+-- 24h TTL: sentiment doesn't need to refresh faster than that, and every
+-- call costs against the free Apify budget.
+CREATE TABLE IF NOT EXISTS reddit_sentiment_cache_meta (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    fetched_at TEXT NOT NULL
+);
+
 -- Manual devy watchlist — college prospects not yet in any NFL data source.
 CREATE TABLE IF NOT EXISTS devy_prospects (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -1,9 +1,18 @@
-"""Persists Reddit sentiment scores into player_sentiment."""
+"""Fetches Reddit posts (via Apify), scores sentiment, and persists into
+player_sentiment — cached 24h so casual re-runs don't hit Apify repeatedly.
+Every call costs against the free $5/month Apify budget, and sentiment
+doesn't need to refresh faster than daily for this app's actual use.
+"""
 
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+from ...analysis.sentiment import score_player_mentions
+from .client import fetch_recent_posts
+
+CACHE_TTL = timedelta(hours=24)
 
 
 def sync_sentiment(conn: sqlite3.Connection, scored: dict[str, dict]) -> int:
@@ -51,3 +60,36 @@ def tracked_player_names(conn: sqlite3.Connection) -> list[str]:
         """
     ).fetchall()
     return [row["full_name"] for row in rows]
+
+
+def sync_reddit_sentiment(
+    conn: sqlite3.Connection,
+    player_names: list[str],
+    subreddit_flairs: dict[str, list[str] | None] | None = None,
+    limit: int = 100,
+    force: bool = False,
+) -> tuple[int, int] | None:
+    """Fetches recent posts, scores them against player_names, and persists
+    the result. Returns (posts_scanned, players_scored), or None if skipped
+    because the cache is still fresh (<24h) — pass force=True to bypass.
+    """
+    row = conn.execute("SELECT fetched_at FROM reddit_sentiment_cache_meta WHERE id = 1").fetchone()
+    if row and not force:
+        fetched_at = datetime.fromisoformat(row["fetched_at"])
+        if datetime.now(timezone.utc) - fetched_at < CACHE_TTL:
+            return None
+
+    posts = fetch_recent_posts(subreddit_flairs=subreddit_flairs, limit=limit)
+    scored = score_player_mentions(posts, player_names)
+    count = sync_sentiment(conn, scored)
+
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT INTO reddit_sentiment_cache_meta (id, fetched_at) VALUES (1, ?)
+        ON CONFLICT(id) DO UPDATE SET fetched_at=excluded.fetched_at
+        """,
+        (now,),
+    )
+    conn.commit()
+    return len(posts), count

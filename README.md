@@ -191,7 +191,7 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-125 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
+131 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
 the private-league auth path, the players table's platform-scoped primary
 key (prevents Sleeper/ESPN ID collisions), cross-platform name matching
 (suffixes, punctuation, ambiguous-duplicate handling), the rank-inefficiency
@@ -340,6 +340,30 @@ fantasy-assistant sync-reddit --sub-flair DynastyFF Trade --sub-flair DynastyFF 
 # only Trade/Rookie Draft flaired posts from r/DynastyFF, nothing from r/fantasyfootball
 ```
 
+**Cached 24h**, same idea as KTC/FantasyPros/FFC's cache but a full day
+instead of 12h — sentiment doesn't need to be fresher than that, and every
+call costs against the free Apify budget. Re-running `sync-reddit` within
+24h of the last run just reports "cache fresh — skipped"; `--force`
+bypasses it. `reddit_sentiment_cache_meta` is one global row (this is a
+single combined sync across both subreddits, not scoped per format like
+KTC/FFC), mirroring `players_cache_meta`'s single-row shape.
+
+**How sentiment is scored** (`analysis/sentiment.py`): a cheap, transparent
+lexicon match, not NLP. For each fetched post, the title+body text is
+checked for a mention of a tracked player by last name (crude but readable
+— catches casual references like "Chase is a stud" without needing full
+name matches). Any post that mentions a player is scored by counting how
+many words from a fixed positive list (`buy`, `breakout`, `stud`, `elite`,
+`value`, `bell cow`, ...) versus a fixed negative list (`sell`, `bust`,
+`injury`, `avoid`, `fade`, `overrated`, ...) appear in it — net_score =
+positive hits minus negative hits for that post, added to the player's
+running total across all matching posts. `mention_count` is just how many
+posts referenced them; `positive_count`/`negative_count` tally how many of
+those individual posts leaned each way. This is intentionally simple: a
+signal for "this player is being talked about, and mostly positively or
+negatively," not a claim of real sentiment understanding — one optional
+input into buy-low/sell-high, not a standalone product.
+
 ## ESPN private league
 
 Cookies are set as Railway env vars `ESPN_SWID`/`ESPN_S2` (confirmed
@@ -430,5 +454,5 @@ src/fantasy_assistant/
     fantasypros/                # client (verified live), sync
     ffc/                        # client (UNVERIFIED), sync — real ADP for the draft board
     reddit/                     # client (Apify-based, UNVERIFIED), sync
-tests/                        # 125 tests, see "Run the tests" above
+tests/                        # 131 tests, see "Run the tests" above
 ```

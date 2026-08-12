@@ -18,9 +18,8 @@ from .platforms.ffc.client import FFCClient, FFCFetchError, FFCParseError
 from .platforms.ffc.sync import sync_adp as ffc_sync_adp
 from .platforms.ktc.client import KTCClient, KTCFetchError, KTCParseError
 from .platforms.ktc.sync import sync_values as ktc_sync_values
-from .analysis.sentiment import score_player_mentions
-from .platforms.reddit.client import ApifyFetchError, ApifyNotConfigured, fetch_recent_posts
-from .platforms.reddit.sync import sync_sentiment, tracked_player_names
+from .platforms.reddit.client import ApifyFetchError, ApifyNotConfigured
+from .platforms.reddit.sync import sync_reddit_sentiment, tracked_player_names
 from .platforms.sleeper.client import SleeperAPIError, SleeperClient
 from .platforms.sleeper.sync import sync_league, sync_players
 from .platforms.sleeper.weekly_points import current_completed_weeks, sync_weekly_points
@@ -374,7 +373,8 @@ def _build_subreddit_flairs(pairs: tuple[tuple[str, str], ...]) -> dict[str, lis
     "--sub-flair fantasyfootball \"Player Discussion\". If omitted entirely, defaults to "
     "DynastyFF (Player Discussion, News) + fantasyfootball (Player Discussion).",
 )
-def sync_reddit_cmd(limit: int, sub_flair_pairs: tuple[tuple[str, str], ...]):
+@click.option("--force", is_flag=True, help="Refetch even if the cache is <24h old.")
+def sync_reddit_cmd(limit: int, sub_flair_pairs: tuple[tuple[str, str], ...], force: bool):
     """Pull recent Reddit posts (via Apify) and score sentiment for players in your synced leagues."""
     conn = db_module.get_connection()
     db_module.init_db(conn)
@@ -387,7 +387,7 @@ def sync_reddit_cmd(limit: int, sub_flair_pairs: tuple[tuple[str, str], ...]):
     subreddit_flairs = _build_subreddit_flairs(sub_flair_pairs)
 
     try:
-        posts = fetch_recent_posts(subreddit_flairs=subreddit_flairs, limit=limit)
+        result = sync_reddit_sentiment(conn, player_names, subreddit_flairs=subreddit_flairs, limit=limit, force=force)
     except ApifyNotConfigured as exc:
         raise click.ClickException(str(exc))
     except ApifyFetchError as exc:
@@ -397,9 +397,11 @@ def sync_reddit_cmd(limit: int, sub_flair_pairs: tuple[tuple[str, str], ...]):
             "and it can be fixed."
         )
 
-    scored = score_player_mentions(posts, player_names)
-    count = sync_sentiment(conn, scored)
-    click.echo(f"Scanned {len(posts)} posts, scored sentiment for {count} mentioned players.")
+    if result is None:
+        click.echo("Reddit sentiment cache fresh (<24h) — skipped. Use --force.")
+        return
+    posts_scanned, count = result
+    click.echo(f"Scanned {posts_scanned} posts, scored sentiment for {count} mentioned players.")
 
 
 @cli.command("buy-sell")
