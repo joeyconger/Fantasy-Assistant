@@ -85,6 +85,58 @@ def test_find_rank_inefficiencies_superflex_empty_when_no_espn_superflex_data(co
     assert len(find_rank_inefficiencies(conn, qb_mode="1qb")) == 1
 
 
+def test_find_rank_inefficiencies_excludes_defensive_positions(conn):
+    from fantasy_assistant.analysis.draft_board import find_rank_inefficiencies
+
+    _add_player(conn, "1", "sleeper", "Some Defense", "D/ST")
+    _add_player(conn, "9", "espn", "Some Defense", "D/ST")
+    conn.execute("INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES ('1','sleeper','sleeper_search_rank',50,?)", (NOW,))
+    conn.execute("INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES ('9','espn','espn_standard_rank',200,?)", (NOW,))
+    conn.commit()
+
+    assert find_rank_inefficiencies(conn) == []
+
+
+def test_find_rank_inefficiencies_superflex_uses_position_rank_for_non_qb(conn):
+    """Sleeper's search_rank has no Superflex-aware ordering, but ESPN's
+    Superflex rank type genuinely crowds QBs to the top — comparing raw
+    overall rank for a RB in that situation would produce a huge fake delta
+    driven entirely by how many QBs ESPN now ranks above him, not a real
+    disagreement. Set up a pool where that crowding is obvious and confirm
+    the RB's delta reflects position rank, not the crushed overall rank."""
+    from fantasy_assistant.analysis.draft_board import find_rank_inefficiencies
+
+    _add_player(conn, "rb_a", "sleeper", "Value RB", "RB")
+    _add_player(conn, "rb_b", "espn", "Value RB", "RB")
+    # Sleeper: this RB is the best RB in its pool (overall rank 10, position rank 1).
+    conn.execute("INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES ('rb_a','sleeper','sleeper_search_rank',10,?)", (NOW,))
+    # ESPN Superflex: same RB is still the best RB (position rank 1), but a
+    # wave of QBs crowded above it drags its overall rank down to 90.
+    conn.execute("INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES ('rb_b','espn','espn_superflex_rank',90,?)", (NOW,))
+    for i in range(5):
+        qb_sleeper_id, qb_espn_id = f"qb_s{i}", f"qb_e{i}"
+        _add_player(conn, qb_sleeper_id, "sleeper", f"Filler QB {i}", "QB")
+        _add_player(conn, qb_espn_id, "espn", f"Filler QB {i}", "QB")
+        conn.execute(
+            "INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES (?,'sleeper','sleeper_search_rank',?,?)",
+            (qb_sleeper_id, 200 + i, NOW),
+        )
+        conn.execute(
+            "INSERT INTO player_rankings (player_id, platform, source, overall_rank, fetched_at) VALUES (?,'espn','espn_superflex_rank',?,?)",
+            (qb_espn_id, i + 1, NOW),
+        )
+    conn.commit()
+
+    results = find_rank_inefficiencies(conn, qb_mode="superflex")
+    rb_result = next(r for r in results if r["position"] == "RB")
+    assert rb_result["position_relative"] is True
+    # Both sides rank this RB #1 at its position — position-rank delta is 0,
+    # not the huge fake delta raw overall rank (10 - 90 = -80) would show.
+    assert rb_result["sleeper_rank"] == 1
+    assert rb_result["espn_rank"] == 1
+    assert rb_result["delta"] == 0
+
+
 def test_find_rank_inefficiencies_excludes_players_past_rank_cap(conn):
     from fantasy_assistant.analysis.draft_board import find_rank_inefficiencies
 

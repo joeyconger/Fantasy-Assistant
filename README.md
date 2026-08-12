@@ -108,6 +108,37 @@ were still NULL (a freshly-synced league before any games are played) —
 
 No new environment variables or schema changes.
 
+## Draft Board fixes: defensive players + Superflex QB-crowding
+
+Found from a real live run on the "Lads" (ESPN, Superflex) league: RBs like
+James Conner and Tyler Allgeier were showing enormous fake deltas (Sleeper
+rank ~90 vs ESPN Superflex rank ~290, a "-199" swing) that didn't reflect
+any real disagreement.
+
+- **Root cause**: Sleeper's `search_rank` has no Superflex-aware ordering
+  (it's one list regardless of qb_mode — see `roster_format.py`), but
+  ESPN's Superflex rank type genuinely re-sorts its whole pool around
+  Superflex QB scarcity, so every QB jumps toward the top of the overall
+  list. That mechanically drags every RB/WR/TE/K down in *overall* rank
+  even when their value relative to other players at their own position
+  barely moved — comparing raw overall rank in that situation was mostly
+  measuring "how many QBs ESPN now ranks above this guy," not a real market
+  gap.
+- **Fix**: in Superflex mode, RB/WR/TE/K deltas now compare **within-position
+  rank** (RB vs RB, WR vs WR, ...) instead of overall rank — stable across
+  formats since Superflex reshuffles QBs against everyone else, not RBs
+  against other RBs. QB deliberately keeps using overall rank: that jump
+  *is* the real Superflex signal this tool exists to surface. The web table
+  labels these rows "RB12"-style instead of a bare number so it's obvious
+  which metric is being compared, with a note explaining why.
+- **Also**: team defenses and any IDP positions (none of these leagues play
+  IDP) are now excluded from the draft board outright — D/ST valuation
+  doesn't belong in a skill-position market-inefficiency tool.
+
+`analysis/draft_board.py` and `tests/test_analysis.py` — see
+`test_find_rank_inefficiencies_superflex_uses_position_rank_for_non_qb` and
+`test_find_rank_inefficiencies_excludes_defensive_positions`.
+
 ## Setup
 
 ```powershell
@@ -124,7 +155,7 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-95 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
+97 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
 the private-league auth path, the players table's platform-scoped primary
 key (prevents Sleeper/ESPN ID collisions), cross-platform name matching
 (suffixes, punctuation, ambiguous-duplicate handling), the rank-inefficiency
@@ -301,5 +332,5 @@ src/fantasy_assistant/
     ktc/                        # client (verified live), sync
     fantasypros/                # client (verified live), sync
     reddit/                     # client (UNTESTED - needs credentials), sync
-tests/                        # 95 tests, see "Run the tests" above
+tests/                        # 97 tests, see "Run the tests" above
 ```

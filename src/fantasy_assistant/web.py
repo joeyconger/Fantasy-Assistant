@@ -322,13 +322,26 @@ def draft_board_page(league_id: str, _user: str = Depends(require_auth), limit: 
             note = "<p class='empty'>(Also possible: ESPN's data doesn't have a confirmed Superflex-specific rank yet.)</p>"
         body = f"<p class='empty'>No matched players with ranks from both platforms yet. Run sync-rankings.</p>{note}"
     else:
+        def _rank_cell(r):
+            if r["position_relative"]:
+                return f"{html.escape(r['position'])}{r['sleeper_rank']}", f"{html.escape(r['position'])}{r['espn_rank']}"
+            return str(r["sleeper_rank"]), str(r["espn_rank"])
+
         rows = "".join(
             f"<tr><td>{player_cell(r['name'], r['position'])}</td>"
-            f"<td>{r['sleeper_rank']}</td><td>{r['espn_rank']}</td><td>{r['delta']:+}</td>"
+            f"<td>{_rank_cell(r)[0]}</td><td>{_rank_cell(r)[1]}</td><td>{r['delta']:+}</td>"
             f"<td>{html.escape(r['note'])}</td></tr>"
             for r in results
         )
-        body = table_wrap(
+        rank_note = (
+            "<p class='tag'>RB/WR/TE/K ranks shown as position rank (e.g. RB12), not overall — "
+            "Superflex crowds QBs to the top of the overall list, which would otherwise make every "
+            "other position look artificially crushed. QB still shows overall rank, since QB's overall-rank "
+            "jump in Superflex *is* the real signal.</p>"
+            if qb_mode == "superflex"
+            else ""
+        )
+        body = rank_note + table_wrap(
             f"""<table><thead><tr><th>Player</th><th>Sleeper Rank</th>
         <th>ESPN Rank ({qb_mode.upper()})</th><th>Delta</th><th>Note</th></tr></thead><tbody>{rows}</tbody></table>"""
         )

@@ -8,6 +8,23 @@ Sleeper's search_rank spans its entire ~12,000-player pool while ESPN's pool
 here is filtered to ~2,000 — comparing raw ordinals across mismatched-size
 universes would produce meaningless deltas out past the draftable range, so
 we only compare players both sources consider draft-relevant.
+
+Defensive players (team D/ST and any IDP positions) are excluded outright —
+none of these leagues are IDP leagues, and D/ST valuation logic doesn't
+belong in a skill-position market-inefficiency tool.
+
+Superflex QB-crowding confound: Sleeper's search_rank has no Superflex-aware
+ordering (see roster_format.py), but ESPN's Superflex rank type genuinely
+re-sorts its whole pool around Superflex QB scarcity — every QB jumps way up
+the overall list, which mechanically pushes every RB/WR/TE/K down in overall
+rank even though their value *relative to their own position* barely moved.
+Comparing raw overall rank in that situation produces huge, fake deltas for
+non-QB players that are really just measuring "how many QBs ESPN now ranks
+above this guy," not a real market disagreement. QB is the one position
+where that overall-rank shift *is* the real Superflex signal, so QB keeps
+using overall rank; every other position switches to within-position rank
+(RB vs RB, WR vs WR, ...) in Superflex mode, which stays stable across
+formats since Superflex doesn't reshuffle RBs against other RBs.
 """
 
 from __future__ import annotations
@@ -18,6 +35,15 @@ from ..platforms.matching import match_players
 
 DEFAULT_RANK_CAP = 300
 
+# Team defense + individual defensive positions — excluded outright, not one
+# of these leagues plays IDP, and D/ST doesn't fit a skill-position value tool.
+DEFENSIVE_POSITIONS = {"D/ST", "DEF", "DT", "DE", "LB", "DL", "CB", "S", "DB"}
+
+# Positions whose overall rank gets distorted by Superflex QB-crowding —
+# QB is deliberately excluded, its overall-rank shift in Superflex mode is
+# the real signal this tool exists to surface.
+POSITION_RELATIVE_IN_SUPERFLEX = {"RB", "WR", "TE", "K"}
+
 
 def _rank_map(conn: sqlite3.Connection, platform: str, source: str) -> dict[str, int]:
     rows = conn.execute(
@@ -27,6 +53,35 @@ def _rank_map(conn: sqlite3.Connection, platform: str, source: str) -> dict[str,
     return {row["player_id"]: row["overall_rank"] for row in rows}
 
 
+def _position_rank_map(conn: sqlite3.Connection, platform: str, rank_map: dict[str, int]) -> dict[str, int]:
+    """Within-position rank (1 = best at that position) derived from the
+    same overall_rank ordering already fetched — no extra data source
+    needed, just re-sorted per position."""
+    if not rank_map:
+        return {}
+    ids = list(rank_map.keys())
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"SELECT player_id, position FROM players WHERE platform = ? AND player_id IN ({placeholders})",
+        (platform, *ids),
+    ).fetchall()
+    position_by_id = {row["player_id"]: row["position"] for row in rows}
+
+    buckets: dict[str, list[tuple[int, str]]] = {}
+    for player_id, rank in rank_map.items():
+        position = position_by_id.get(player_id)
+        if not position:
+            continue
+        buckets.setdefault(position, []).append((rank, player_id))
+
+    result: dict[str, int] = {}
+    for position_ranks in buckets.values():
+        position_ranks.sort()
+        for position_rank, (_, player_id) in enumerate(position_ranks, start=1):
+            result[player_id] = position_rank
+    return result
+
+
 def find_rank_inefficiencies(
     conn: sqlite3.Connection, limit: int = 25, rank_cap: int = DEFAULT_RANK_CAP, qb_mode: str = "1qb"
 ) -> list[dict]:
@@ -34,23 +89,55 @@ def find_rank_inefficiencies(
     (espn_superflex_rank) if any was found during sync — see espn/rankings.py
     for why that's not guaranteed to exist. Sleeper's search_rank doesn't
     differentiate by qb_mode at all, so the Sleeper side is unaffected by
-    this parameter either way."""
+    this parameter either way — see the module docstring for how that's
+    handled for non-QB positions."""
     espn_source = "espn_superflex_rank" if qb_mode == "superflex" else "espn_standard_rank"
     sleeper_ranks = _rank_map(conn, "sleeper", "sleeper_search_rank")
     espn_ranks = _rank_map(conn, "espn", espn_source)
+
+    sleeper_position_ranks = _position_rank_map(conn, "sleeper", sleeper_ranks) if qb_mode == "superflex" else {}
+    espn_position_ranks = _position_rank_map(conn, "espn", espn_ranks) if qb_mode == "superflex" else {}
 
     matches = match_players(conn, "sleeper", "espn")
 
     results = []
     for m in matches:
-        sleeper_rank = sleeper_ranks.get(m["a_player_id"])
-        espn_rank = espn_ranks.get(m["b_player_id"])
-        if sleeper_rank is None or espn_rank is None:
-            continue
-        if sleeper_rank > rank_cap or espn_rank > rank_cap:
+        if m["position"] in DEFENSIVE_POSITIONS:
             continue
 
+        sleeper_overall = sleeper_ranks.get(m["a_player_id"])
+        espn_overall = espn_ranks.get(m["b_player_id"])
+        if sleeper_overall is None or espn_overall is None:
+            continue
+        if sleeper_overall > rank_cap or espn_overall > rank_cap:
+            continue
+
+        position_relative = qb_mode == "superflex" and m["position"] in POSITION_RELATIVE_IN_SUPERFLEX
+        if position_relative:
+            sleeper_rank = sleeper_position_ranks.get(m["a_player_id"], sleeper_overall)
+            espn_rank = espn_position_ranks.get(m["b_player_id"], espn_overall)
+        else:
+            sleeper_rank = sleeper_overall
+            espn_rank = espn_overall
+
         delta = sleeper_rank - espn_rank
+        if position_relative:
+            note = (
+                f"ESPN ranks this {m['position']} higher among {m['position']}s (Superflex-adjusted, QB-crowding removed)"
+                if delta > 0
+                else f"Sleeper implies a higher {m['position']} rank among {m['position']}s (Superflex-adjusted, QB-crowding removed)"
+                if delta < 0
+                else f"Ranked evenly among {m['position']}s"
+            )
+        else:
+            note = (
+                "ESPN values higher (Sleeper drafters may get value)"
+                if delta > 0
+                else "Sleeper values higher (ESPN drafters may get value)"
+                if delta < 0
+                else "Ranked evenly"
+            )
+
         results.append(
             {
                 "name": m["name"].title(),
@@ -59,12 +146,9 @@ def find_rank_inefficiencies(
                 "espn_player_id": m["b_player_id"],
                 "sleeper_rank": sleeper_rank,
                 "espn_rank": espn_rank,
+                "position_relative": position_relative,
                 "delta": delta,
-                "note": "ESPN values higher (Sleeper drafters may get value)"
-                if delta > 0
-                else "Sleeper values higher (ESPN drafters may get value)"
-                if delta < 0
-                else "Ranked evenly",
+                "note": note,
             }
         )
 
