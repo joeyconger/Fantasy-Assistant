@@ -326,6 +326,55 @@ def test_no_flags_when_performance_and_market_agree(conn):
     assert results == []
 
 
+def test_sentiment_only_applied_for_dynasty_devy_not_redraft(conn):
+    """Reddit sentiment is sourced from r/DynastyFF (+ r/fantasyfootball's
+    Player Discussion flair) — dynasty-community chatter. It should only
+    factor into dynasty/devy leagues' flags, not redraft ones, even when
+    the same player has both a performance trend and sentiment data.
+
+    Both leagues get a performance-driven buy_low flag regardless (no
+    market data seeded for either, so that condition fires on its own) —
+    the thing under test is whether sentiment adds a *second*, distinct
+    buy_low flag on top of that, which should only happen for dynasty.
+    """
+    from fantasy_assistant.analysis.buy_low_sell_high import find_buy_low_sell_high
+
+    _add_league(conn, league_id="DYN", format_="dynasty")
+    _add_league(conn, league_id="RD", format_="redraft")
+    for league_id in ("DYN", "RD"):
+        _add_player(conn, f"p1-{league_id}", "sleeper", "Hyped Guy", "WR")
+        conn.execute(
+            "INSERT INTO roster_players (league_id, roster_id, player_id) VALUES (?, '1', ?)",
+            (league_id, f"p1-{league_id}"),
+        )
+        for week, pts in [(1, 5.0), (2, 5.0), (3, 20.0), (4, 20.0)]:
+            conn.execute(
+                "INSERT INTO player_weekly_points (league_id, player_id, week, points, fetched_at) VALUES (?, ?, ?, ?, ?)",
+                (league_id, f"p1-{league_id}", week, pts, NOW),
+            )
+    # Sentiment lagging a rising performance trend — a second buy_low
+    # trigger on top of the performance-only one, but only for dynasty.
+    conn.execute(
+        "INSERT INTO player_sentiment (normalized_name, source, full_name, mention_count, positive_count, negative_count, net_score, fetched_at) "
+        "VALUES ('hyped guy', 'reddit', 'Hyped Guy', 5, 0, 5, -5, ?)",
+        (NOW,),
+    )
+    conn.commit()
+
+    dynasty_results = find_buy_low_sell_high(conn, "DYN", "dynasty")
+    redraft_results = find_buy_low_sell_high(conn, "RD", "redraft")
+
+    assert dynasty_results[0]["sentiment"] == -5
+    dynasty_reasons = [reason for _, reason in dynasty_results[0]["flags"]]
+    assert any("sentiment" in r.lower() for r in dynasty_reasons)
+    assert len(dynasty_results[0]["flags"]) == 2  # performance-driven + sentiment-driven
+
+    assert redraft_results[0]["sentiment"] is None
+    redraft_reasons = [reason for _, reason in redraft_results[0]["flags"]]
+    assert not any("sentiment" in r.lower() for r in redraft_reasons)
+    assert len(redraft_results[0]["flags"]) == 1  # performance-driven only
+
+
 def test_buy_low_sell_high_uses_superflex_values_for_superflex_league(conn):
     from fantasy_assistant.analysis.buy_low_sell_high import find_buy_low_sell_high
 

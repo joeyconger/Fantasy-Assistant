@@ -81,7 +81,6 @@ def find_buy_low_sell_high(
     conn: sqlite3.Connection, league_id: str, league_format: str, limit: int = 25, my_owner_id: str | None = None
 ) -> list[dict]:
     trends = compute_trends(conn, league_id)
-    sentiment = _sentiment_map(conn)
 
     league_row = conn.execute("SELECT platform, roster_positions FROM leagues WHERE league_id = ?", (league_id,)).fetchone()
     if not league_row:
@@ -92,6 +91,12 @@ def find_buy_low_sell_high(
     market_format = league_format if league_format in ("dynasty", "devy") else None
     value_deltas = _market_value_delta_map(conn, market_format, qb_mode) if market_format else {}
     rank_deltas = {} if market_format else _expert_rank_delta_map(conn)
+
+    # Reddit sentiment is sourced from r/DynastyFF (+ r/fantasyfootball's
+    # Player Discussion flair) — dynasty-community chatter, not a redraft
+    # signal. Only attach it for dynasty/devy leagues, same split as KTC
+    # values above, so it doesn't leak into BMFS/Lads' buy-sell flags.
+    sentiment = _sentiment_map(conn) if market_format else {}
 
     my_roster_id = None
     if my_owner_id:

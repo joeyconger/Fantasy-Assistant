@@ -191,7 +191,7 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-131 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
+132 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
 the private-league auth path, the players table's platform-scoped primary
 key (prevents Sleeper/ESPN ID collisions), cross-platform name matching
 (suffixes, punctuation, ambiguous-duplicate handling), the rank-inefficiency
@@ -364,6 +364,15 @@ signal for "this player is being talked about, and mostly positively or
 negatively," not a claim of real sentiment understanding — one optional
 input into buy-low/sell-high, not a standalone product.
 
+**Only shown for dynasty/devy leagues**: since the data itself is sourced
+from r/DynastyFF (+ r/fantasyfootball's Player Discussion flair), it's
+dynasty-community chatter, not a general redraft signal. `buy_low_sell_high.py`
+only computes and attaches it for dynasty/devy leagues (Weekend Warriors,
+Dollars for Devys) — same `league_format in ("dynasty", "devy")` split KTC
+values already use in that function. BMFS and Lads (redraft) never see a
+sentiment-driven flag or the "Sentiment: ±N" line, even once real Reddit
+data is synced.
+
 ## ESPN private league
 
 Cookies are set as Railway env vars `ESPN_SWID`/`ESPN_S2` (confirmed
@@ -454,5 +463,5 @@ src/fantasy_assistant/
     fantasypros/                # client (verified live), sync
     ffc/                        # client (UNVERIFIED), sync — real ADP for the draft board
     reddit/                     # client (Apify-based, UNVERIFIED), sync
-tests/                        # 131 tests, see "Run the tests" above
+tests/                        # 132 tests, see "Run the tests" above
 ```
