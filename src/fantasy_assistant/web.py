@@ -327,12 +327,15 @@ def draft_board_page(league_id: str, _user: str = Depends(require_auth), limit: 
                 return f"{html.escape(r['position'])}{r['sleeper_rank']}", f"{html.escape(r['position'])}{r['espn_rank']}"
             return str(r["sleeper_rank"]), str(r["espn_rank"])
 
-        rows = "".join(
-            f"<tr><td>{player_cell(r['name'], r['position'])}</td>"
-            f"<td>{_rank_cell(r)[0]}</td><td>{_rank_cell(r)[1]}</td><td>{r['delta']:+}</td>"
-            f"<td>{html.escape(r['note'])}</td></tr>"
-            for r in results
-        )
+        def _row_html(r):
+            sleeper_cell, espn_cell = _rank_cell(r)
+            return (
+                f"<tr><td>{player_cell(r['name'], r['position'])}</td>"
+                f"<td>{sleeper_cell}</td><td>{espn_cell}</td><td>{r['delta']:+}</td>"
+                f"<td>{html.escape(r['note'])}</td></tr>"
+            )
+
+        rows = "".join(_row_html(r) for r in results)
         rank_note = (
             "<p class='tag'>RB/WR/TE/K ranks shown as position rank (e.g. RB12), not overall — "
             "Superflex crowds QBs to the top of the overall list, which would otherwise make every "

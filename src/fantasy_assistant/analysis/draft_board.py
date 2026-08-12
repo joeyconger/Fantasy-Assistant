@@ -9,9 +9,14 @@ here is filtered to ~2,000 — comparing raw ordinals across mismatched-size
 universes would produce meaningless deltas out past the draftable range, so
 we only compare players both sources consider draft-relevant.
 
-Defensive players (team D/ST and any IDP positions) are excluded outright —
-none of these leagues are IDP leagues, and D/ST valuation logic doesn't
-belong in a skill-position market-inefficiency tool.
+Defensive players are excluded outright — none of these leagues play IDP,
+and defense valuation logic doesn't belong in a skill-position
+market-inefficiency tool. In practice, team defenses (Sleeper labels them
+"DEF", ESPN "D/ST") can never appear here anyway: match_players() only
+pairs players whose position string is identical on both platforms, so
+that label mismatch already keeps them from matching. This filter is real
+protection only for individual defensive positions (DT/LB/CB/...), where
+both platforms may use the same abbreviation.
 
 Superflex QB-crowding confound: Sleeper's search_rank has no Superflex-aware
 ordering (see roster_format.py), but ESPN's Superflex rank type genuinely
@@ -56,15 +61,18 @@ def _rank_map(conn: sqlite3.Connection, platform: str, source: str) -> dict[str,
 def _position_rank_map(conn: sqlite3.Connection, platform: str, rank_map: dict[str, int]) -> dict[str, int]:
     """Within-position rank (1 = best at that position) derived from the
     same overall_rank ordering already fetched — no extra data source
-    needed, just re-sorted per position."""
+    needed, just re-sorted per position.
+
+    Queries all of the platform's players rather than filtering by an
+    IN (...) list of rank_map's keys — Sleeper's pool alone is ~12,000
+    players, and binding that many parameters in one query risks exceeding
+    SQLITE_MAX_VARIABLE_NUMBER on older sqlite3 builds (default 999 before
+    3.32.0). Fetching everything and filtering in Python is cheap at this
+    scale and has no such limit.
+    """
     if not rank_map:
         return {}
-    ids = list(rank_map.keys())
-    placeholders = ",".join("?" for _ in ids)
-    rows = conn.execute(
-        f"SELECT player_id, position FROM players WHERE platform = ? AND player_id IN ({placeholders})",
-        (platform, *ids),
-    ).fetchall()
+    rows = conn.execute("SELECT player_id, position FROM players WHERE platform = ?", (platform,)).fetchall()
     position_by_id = {row["player_id"]: row["position"] for row in rows}
 
     buckets: dict[str, list[tuple[int, str]]] = {}

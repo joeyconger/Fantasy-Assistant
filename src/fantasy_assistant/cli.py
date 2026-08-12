@@ -199,10 +199,19 @@ def draft_board_cmd(limit: int, qb_mode: str):
         click.echo(msg)
         return
 
+    if qb_mode == "superflex" and any(r["position_relative"] for r in results):
+        click.echo(
+            "Note: RB/WR/TE/K ranks below are position rank (e.g. RB12), not overall rank — "
+            "Superflex crowds QBs to the top of ESPN's overall list, which would otherwise make "
+            "every other position look artificially crushed. QB still shows overall rank.\n"
+        )
+
     click.echo(f"{'Player':<25} {'Pos':<5} {'Sleeper':>8} {'ESPN':>8} {'Delta':>7}  Note")
     for r in results:
+        sleeper_col = f"{r['position']}{r['sleeper_rank']}" if r["position_relative"] else str(r["sleeper_rank"])
+        espn_col = f"{r['position']}{r['espn_rank']}" if r["position_relative"] else str(r["espn_rank"])
         click.echo(
-            f"{r['name']:<25} {r['position']:<5} {r['sleeper_rank']:>8} {r['espn_rank']:>8} "
+            f"{r['name']:<25} {r['position']:<5} {sleeper_col:>8} {espn_col:>8} "
             f"{r['delta']:>7}  {r['note']}"
         )
 
