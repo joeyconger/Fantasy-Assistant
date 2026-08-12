@@ -19,7 +19,7 @@ from .platforms.ffc.sync import sync_adp as ffc_sync_adp
 from .platforms.ktc.client import KTCClient, KTCFetchError, KTCParseError
 from .platforms.ktc.sync import sync_values as ktc_sync_values
 from .analysis.sentiment import score_player_mentions
-from .platforms.reddit.client import ApifyFetchError, ApifyNotConfigured, fetch_recent_posts
+from .platforms.reddit.client import ApifyFetchError, ApifyNotConfigured, DEFAULT_FLAIRS, fetch_recent_posts
 from .platforms.reddit.sync import sync_sentiment, tracked_player_names
 from .platforms.sleeper.client import SleeperAPIError, SleeperClient
 from .platforms.sleeper.sync import sync_league, sync_players
@@ -354,7 +354,15 @@ def sync_ffc_adp_cmd(qb_mode: str, teams: int, force: bool):
 
 @cli.command("sync-reddit")
 @click.option("--limit", default=100, help="Posts to scan per subreddit.")
-def sync_reddit_cmd(limit: int):
+@click.option("--subreddit", "subreddits", multiple=True, help="Repeatable. Defaults to r/DynastyFF only.")
+@click.option(
+    "--flair",
+    "flairs",
+    multiple=True,
+    help="Repeatable. Only posts with a matching flair are scored. Defaults to 'Player Discussion' and 'News'. "
+    "Pass --flair '' (empty string) once to disable flair filtering entirely.",
+)
+def sync_reddit_cmd(limit: int, subreddits: tuple[str, ...], flairs: tuple[str, ...]):
     """Pull recent Reddit posts (via Apify) and score sentiment for players in your synced leagues."""
     conn = db_module.get_connection()
     db_module.init_db(conn)
@@ -364,8 +372,16 @@ def sync_reddit_cmd(limit: int):
         click.echo("No rostered players found — sync a league first.")
         return
 
+    subreddit_list = list(subreddits) or None
+    if flairs == ("",):
+        flair_list = None  # explicit opt-out
+    elif flairs:
+        flair_list = list(flairs)
+    else:
+        flair_list = DEFAULT_FLAIRS
+
     try:
-        posts = fetch_recent_posts(limit=limit)
+        posts = fetch_recent_posts(subreddits=subreddit_list, limit=limit, flairs=flair_list)
     except ApifyNotConfigured as exc:
         raise click.ClickException(str(exc))
     except ApifyFetchError as exc:
