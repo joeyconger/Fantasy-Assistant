@@ -110,6 +110,43 @@ were still NULL (a freshly-synced league before any games are played) —
 
 No new environment variables or schema changes.
 
+## Design refresh: Sleeper-app-flavored visual pass
+
+A second design pass on top of Phase B's system, aimed at "sleek modern
+fantasy app" specifically rather than "clean utilitarian dashboard":
+
+- **Color/gradient**: swapped the flat single-color accent for a
+  teal→violet gradient (`--accent`/`--accent-2`), Sleeper's actual brand
+  palette flavor. Badges, avatars, active nav/tab pills, buttons, and stat
+  tile top-accents all use it. Position/format badges and avatars now use a
+  computed two-stop gradient (flat color → a darker shade of itself, via
+  `web_components.gradient()`/`_darken()`) instead of a flat fill, computed
+  in Python rather than CSS `color-mix()` so it doesn't depend on
+  per-element custom properties.
+- **Depth**: cards, tables, buttons, and nav pills all get a soft shadow
+  plus a hover-lift transition (`translateY` + a stronger shadow) — nothing
+  sits totally flat against the background anymore.
+- **App-shell feel**: the header (logo + nav) is now a `position: sticky`,
+  backdrop-blurred bar (`.app-bar`) that stays pinned while scrolling,
+  instead of static page content you scroll away from.
+- **Collapsible sections**: the home dashboard's per-league standings are
+  now native `<details>/<summary>` widgets (`web_components.collapsible()`)
+  — a real expand/collapse interaction with zero JS, styled to match the
+  rest of the system (custom chevron, card styling). Open by default.
+- **Small motion touches**: a subtle page fade-in on load, a pulsing
+  opacity animation on the disabled Sync button (was static "Syncing…"
+  text only), and a small colored dot before each buy/sell flag.
+- **Darker dark mode**: dark surfaces moved closer to true near-black navy
+  (previously a lighter slate) for more contrast against the brighter
+  accent gradient.
+
+Verified visually with Playwright screenshots (light + dark, mobile +
+desktop viewports) against seeded synthetic data — not just "tests pass,"
+actually rendered and looked at. `tests/test_web_components.py` covers the
+new `gradient()`/`_darken()`/`collapsible()` helpers. No routes, nav
+structure, or page content changed — this is a CSS/markup-only pass on top
+of the existing pages.
+
 ## Draft Board fixes: defensive players + Superflex QB-crowding
 
 Found from a real live run on the "Lads" (ESPN, Superflex) league: RBs like
@@ -191,7 +228,7 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-132 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
+139 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
 the private-league auth path, the players table's platform-scoped primary
 key (prevents Sleeper/ESPN ID collisions), cross-platform name matching
 (suffixes, punctuation, ambiguous-duplicate handling), the rank-inefficiency
@@ -463,5 +500,5 @@ src/fantasy_assistant/
     fantasypros/                # client (verified live), sync
     ffc/                        # client (UNVERIFIED), sync — real ADP for the draft board
     reddit/                     # client (Apify-based, UNVERIFIED), sync
-tests/                        # 132 tests, see "Run the tests" above
+tests/                        # 139 tests, see "Run the tests" above
 ```

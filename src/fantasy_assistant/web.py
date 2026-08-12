@@ -38,7 +38,7 @@ from .platforms.espn.sync import sync_league as espn_sync_league
 from .platforms.sleeper.client import SleeperAPIError, SleeperClient
 from .platforms.sleeper.sync import sync_league as sleeper_sync_league
 from .platforms.sleeper.sync import sync_players
-from .web_components import FORMAT_COLORS, PAGE_STYLE, format_badge, player_cell, stat_tile, table_wrap
+from .web_components import FORMAT_COLORS, PAGE_STYLE, collapsible, format_badge, gradient, player_cell, stat_tile, table_wrap
 
 DASHBOARD_USER = os.environ.get("DASHBOARD_USER")
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD")
@@ -104,7 +104,7 @@ def _nav_html(conn, current_league_id: str | None = None) -> str:
     for l in leagues:
         active = l["league_id"] == current_league_id
         color = FORMAT_COLORS.get(l["format"], "#94a3b8")
-        style = f'style="background:{color}; border-color:{color};"' if active else ""
+        style = f'style="background:{gradient(color)}; border-color:transparent;"' if active else ""
         links.append(
             f'<a class="{"active" if active else ""}" {style} '
             f'href="/league/{quote(l["league_id"])}">{html.escape(l["name"] or l["league_id"])}</a>'
@@ -129,7 +129,7 @@ def _tool_subnav(league_id: str, format_: str | None, current: str) -> str:
     links = []
     for slug, label in items:
         active = slug == current
-        style = 'style="background:var(--accent); border-color:var(--accent);"' if active else ""
+        style = 'style="background:linear-gradient(135deg, var(--accent), var(--accent-2)); border-color:transparent;"' if active else ""
         links.append(f'<a class="{"active" if active else ""}" {style} href="/league/{quote(league_id)}/{slug}">{label}</a>')
     return f'<div class="tabs">{"".join(links)}</div>'
 
@@ -145,10 +145,12 @@ def _page(title: str, body: str, nav_html: str | None = None) -> str:
 <style>{PAGE_STYLE}</style>
 </head>
 <body>
-  <h1>🏈 Fantasy Assistant</h1>
-  <nav>
-    {nav_html}
-  </nav>
+  <header class="app-bar">
+    <h1>🏈 Fantasy Assistant</h1>
+    <nav>
+      {nav_html}
+    </nav>
+  </header>
   {body}
 </body>
 </html>"""
@@ -246,14 +248,16 @@ def _render_dashboard(conn, errors: list[str] | None = None) -> str:
 
     sections = []
     for league in leagues:
-        sections.append(f"""
-        <section>
-          <h3><a href="/league/{quote(league['league_id'])}">{html.escape(str(league['name'] or league['league_id']))}</a>
-            {format_badge(league['format'])} <span class="tag">{html.escape(str(league['platform']))}</span>
-          </h3>
-          {_standings_table_html(conn, league['league_id'])}
-        </section>
-        """)
+        summary = (
+            f"<span>{html.escape(str(league['name'] or league['league_id']))} "
+            f"{format_badge(league['format'])} <span class='tag'>{html.escape(str(league['platform']))}</span></span>"
+        )
+        inner = (
+            f"<p class='tag' style='margin:0 0 var(--space-2);'>"
+            f"<a href='/league/{quote(league['league_id'])}'>Open league tools →</a></p>"
+            f"{_standings_table_html(conn, league['league_id'])}"
+        )
+        sections.append(collapsible(summary, inner))
 
     body = f"""
     {tiles}
