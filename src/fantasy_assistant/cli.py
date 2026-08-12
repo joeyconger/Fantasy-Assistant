@@ -19,7 +19,7 @@ from .platforms.ffc.sync import sync_adp as ffc_sync_adp
 from .platforms.ktc.client import KTCClient, KTCFetchError, KTCParseError
 from .platforms.ktc.sync import sync_values as ktc_sync_values
 from .analysis.sentiment import score_player_mentions
-from .platforms.reddit.client import RedditNotConfigured, build_reddit_client, fetch_recent_posts
+from .platforms.reddit.client import ApifyFetchError, ApifyNotConfigured, fetch_recent_posts
 from .platforms.reddit.sync import sync_sentiment, tracked_player_names
 from .platforms.sleeper.client import SleeperAPIError, SleeperClient
 from .platforms.sleeper.sync import sync_league, sync_players
@@ -355,20 +355,26 @@ def sync_ffc_adp_cmd(qb_mode: str, teams: int, force: bool):
 @cli.command("sync-reddit")
 @click.option("--limit", default=100, help="Posts to scan per subreddit.")
 def sync_reddit_cmd(limit: int):
-    """Pull recent Reddit posts and score sentiment for players in your synced leagues."""
+    """Pull recent Reddit posts (via Apify) and score sentiment for players in your synced leagues."""
     conn = db_module.get_connection()
     db_module.init_db(conn)
-    try:
-        reddit = build_reddit_client()
-    except RedditNotConfigured as exc:
-        raise click.ClickException(str(exc))
 
     player_names = tracked_player_names(conn)
     if not player_names:
         click.echo("No rostered players found — sync a league first.")
         return
 
-    posts = fetch_recent_posts(reddit, limit=limit)
+    try:
+        posts = fetch_recent_posts(limit=limit)
+    except ApifyNotConfigured as exc:
+        raise click.ClickException(str(exc))
+    except ApifyFetchError as exc:
+        raise click.ClickException(
+            f"{exc}\n\nThis was never tested against the live Apify actor — the field-name "
+            "guesses in platforms/reddit/client.py may need a real look. Paste this error back "
+            "and it can be fixed."
+        )
+
     scored = score_player_mentions(posts, player_names)
     count = sync_sentiment(conn, scored)
     click.echo(f"Scanned {len(posts)} posts, scored sentiment for {count} mentioned players.")

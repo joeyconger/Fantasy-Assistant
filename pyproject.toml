@@ -14,7 +14,6 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.32",
     "beautifulsoup4>=4.12",
-    "praw>=7.7",
 ]
 
 [project.optional-dependencies]

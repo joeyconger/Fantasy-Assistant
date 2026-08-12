@@ -24,17 +24,18 @@ Railway) as a small shared web dashboard with a Sleeper/ESPN-app-style design
 | KeepTradeCut (KTC) scraper | ✅ **Verified live** — dynasty and devy, both 1QB and Superflex confirmed with real player data (Ja'Marr Chase, Bijan Robinson, Jeremiah Smith, Arch Manning, etc., sane values). Fixed a real bug found during verification: KTC nests both qb_modes per-record (`oneQBValues`/`superflexValues`), not flat top-level fields — the original `?format=2` URL guess was wrong and unnecessary, one page load has both. |
 | — 1QB vs Superflex split | ✅ Verified — auto-detected from each league's roster settings (2+ QB slots or a Superflex/OP slot → superflex) for buy-sell; explicit `--qb-mode` flag for `sync-ktc`/`devy-list` since those aren't tied to one league. |
 | FantasyPros scraper | ✅ **Verified live** — 511 redraft consensus rankings, correct order (Gibbs #1, Bijan #2, Chase #3 — matches actual current consensus), real names/positions/teams. Worked on the first real run, no fix needed. |
-| Reddit sentiment | 🚫 **Out of scope, by decision** — not just deferred. Requires a Reddit API app only you can create, and you've said you won't be doing that. Code exists (`platforms/reddit/`, `analysis/sentiment.py`) and is unit tested, but will stay unused. Buy-low/sell-high already treats sentiment as optional, so this doesn't block anything else — it just means that one input never populates. |
+| Reddit sentiment | ⚠️ **UNVERIFIED** — re-enabled via Apify's Reddit Scraper actor (`platforms/reddit/`) after Reddit closed self-service API registration. See "Reddit sentiment via Apify" below for the full story, including the ToS tradeoff. Needs `APIFY_API_TOKEN` + a live `sync-reddit` run to confirm. Buy-low/sell-high already treats sentiment as optional, so nothing else depends on this working. |
 | X/Twitter | 🚫 **Skipped, deliberately.** See "Why X/Twitter was skipped" below. |
 | Buy-low/sell-high engine | ⚠️ Combines the above signals correctly (verified via synthetic data + now real KTC + FantasyPros data). Still needs weekly-points data to say anything for a given league — no games played yet this season. |
 | Devy watchlist | ✅ Fully built and tested (it's just a manual list — no external dependency), and now cross-references real KTC devy values |
 
-**Bottom line**: every data source except Reddit (out of scope) and
-X/Twitter (skipped) is verified live — Sleeper, ESPN (league sync +
-player-pool rankings, both qb_modes), KTC, FantasyPros, and now FFC. Phase A
-(functional gaps) is complete. Phase B (design polish + personalization +
-trade analyzer) is also complete. What's left is real weekly-points data,
-which just needs the season to start.
+**Bottom line**: every data source except X/Twitter (skipped) and Reddit
+(re-enabled via Apify, not yet live-verified) is verified live — Sleeper,
+ESPN (league sync + player-pool rankings, both qb_modes), KTC, FantasyPros,
+and FFC. Phase A (functional gaps) is complete. Phase B (design polish +
+personalization + trade analyzer) is also complete. What's left is real
+weekly-points data (just needs the season to start) and live-verifying
+`sync-reddit`.
 
 ## Phase B: design polish + features — complete
 
@@ -190,21 +191,22 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-110 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
+117 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
 the private-league auth path, the players table's platform-scoped primary
 key (prevents Sleeper/ESPN ID collisions), cross-platform name matching
 (suffixes, punctuation, ambiguous-duplicate handling), the rank-inefficiency
 engine (including the Superflex QB-crowding position-relative fix and FFC
 ADP integration), performance trend math, waiver/trade filtering, the
 buy-low/sell-high flag logic, KTC/FantasyPros/FFC parser strategies against
-synthetic HTML/JSON, Reddit sentiment scoring, the devy watchlist,
+synthetic HTML/JSON, the Apify-based Reddit client's defensive field
+extraction, lexicon-based sentiment scoring, the devy watchlist,
 roster-needs gap analysis, the trade analyzer, the design-system component
 helpers (XSS-escaping), and the web dashboard (auth gating, XSS-escaping,
 missing-env-var fail-fast).
 
-What tests can't cover: whether the *real* KTC/FantasyPros pages match the
-HTML/JSON shapes the parsers assume, and whether Reddit's API behaves as
-expected with real credentials. Only a live run answers that.
+What tests can't cover: whether the *real* KTC/FantasyPros pages, FFC's ADP
+API, or Apify's Reddit Scraper actor match the shapes the parsers assume.
+Only a live run answers that.
 
 ## Everyday commands
 
@@ -215,7 +217,7 @@ fantasy-assistant sync-weekly-points 1389373095143284736   # this week's + recen
 fantasy-assistant sync-ktc --format dynasty --qb-mode 1qb   # or --format devy, --qb-mode superflex
 fantasy-assistant sync-fantasypros
 fantasy-assistant sync-ffc-adp --qb-mode 1qb        # or --qb-mode superflex; real ADP for the draft board
-fantasy-assistant sync-reddit       # needs REDDIT_CLIENT_ID/SECRET env vars first
+fantasy-assistant sync-reddit       # needs APIFY_API_TOKEN env var first
 
 fantasy-assistant standings 1389373095143284736
 fantasy-assistant owners 1389373095143284736                      # find your owner_id for personalization
@@ -261,7 +263,9 @@ on it and seeing which mode it reports).
 All done and verified live: waiver/trade/buy-sell platform-awareness bug
 fixed, KTC (dynasty + devy, both qb_modes), FantasyPros, and ESPN
 player-pool rankings (both qb_modes, including confirming ESPN genuinely
-has distinct Superflex data). ~~Reddit~~ is out of scope by decision.
+has distinct Superflex data). Reddit sentiment was originally out of scope
+by decision, then re-enabled via Apify once a cheap third-party option was
+found — see "Reddit sentiment via Apify" below.
 
 **What's left, and it's just waiting on the season:**
 
@@ -277,9 +281,42 @@ Per the original scope: X's API is paid and priced for commercial use, not
 a personal side project — not cost-effective here. The documented fallback
 (RSS/Nitter mirrors of beat reporters) was also skipped: Nitter instances
 are unreliable and frequently down, which would make that data source
-flaky in a way that's worse than just not having it. Reddit is the sentiment
-source; if this becomes a real gap in practice, revisit then rather than
-building against infrastructure likely to break on its own.
+flaky in a way that's worse than just not having it. Reddit (via Apify, see
+below) is the sentiment source; if X becomes a real gap in practice, revisit
+then rather than building against infrastructure likely to break on its own.
+
+## Reddit sentiment via Apify
+
+Originally out of scope: Reddit sentiment needed a "script" app
+(client_id/client_secret) that only the account owner could create. By the
+time this was revisited, Reddit had closed that door entirely — self-service
+API registration closed November 2025, and the old free workaround
+(unauthenticated `.json` URLs, no key needed) got blocked in May 2026 too.
+There's no compliant free path left for a new project.
+
+**What's used instead**: Apify's Reddit Scraper actor (`platforms/reddit/`),
+called over Apify's plain REST API (`run-sync-get-dataset-items`) — no
+Reddit credentials needed, just a free Apify account. This is explicitly a
+ToS gray area: Apify is scraping Reddit on your behalf, which Reddit's own
+terms don't permit, even though enforcement against small third-party
+scrapers has been looser than, say, X's. Going ahead with it was a deliberate
+call, not a "this is definitely fine" one.
+
+**Cost**: Apify's free plan grants $5/month usage forever, no card required.
+The Reddit Scraper actor runs ~$3.40 per 1,000 results; at this app's volume
+(periodic sentiment checks across a couple dozen rostered players) that free
+allowance should comfortably cover it indefinitely, though that's not a
+guarantee if Apify changes pricing or the free tier later.
+
+**UNVERIFIED**: same situation as KTC/FantasyPros/FFC when they were first
+built — this sandbox can't reach apify.com, so neither the Reddit Scraper
+actor's exact input parameters nor its output field names are confirmed
+live. `platforms/reddit/client.py` tries several plausible field names per
+attribute defensively rather than betting on one exact schema (same pattern
+as `espn/rankings.py`'s rank-type guessing). Set `APIFY_API_TOKEN` and run
+`fantasy-assistant sync-reddit` locally to verify; an `ApifyFetchError` or
+a run that scans posts but scores zero players despite real matches
+existing both point at the assumptions in `client.py` needing a real look.
 
 ## ESPN private league
 
@@ -297,7 +334,7 @@ redo it, or want to point a fresh Railway project at this repo.
    `joeyconger/Fantasy-Assistant`, the working branch.
 2. **Volume** (Settings → Volumes → New Volume), mount path `/data`.
 3. **Variables**: `DASHBOARD_USER`, `DASHBOARD_PASSWORD`, `DATABASE_PATH=/data/fantasy_assistant.db`,
-   `ESPN_SWID`, `ESPN_S2`, and (once you set them up) `REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET`.
+   `ESPN_SWID`, `ESPN_S2`, and (once you set it up) `APIFY_API_TOKEN`.
 4. **Networking → Generate Domain**.
 
 Web dashboard pages: `/` (priorities + standings + Sync Now), then
@@ -370,6 +407,6 @@ src/fantasy_assistant/
     ktc/                        # client (verified live), sync
     fantasypros/                # client (verified live), sync
     ffc/                        # client (UNVERIFIED), sync — real ADP for the draft board
-    reddit/                     # client (UNTESTED - needs credentials), sync
-tests/                        # 110 tests, see "Run the tests" above
+    reddit/                     # client (Apify-based, UNVERIFIED), sync
+tests/                        # 117 tests, see "Run the tests" above
 ```
