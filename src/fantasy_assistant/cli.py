@@ -19,7 +19,7 @@ from .platforms.ffc.sync import sync_adp as ffc_sync_adp
 from .platforms.ktc.client import KTCClient, KTCFetchError, KTCParseError
 from .platforms.ktc.sync import sync_values as ktc_sync_values
 from .analysis.sentiment import score_player_mentions
-from .platforms.reddit.client import ApifyFetchError, ApifyNotConfigured, DEFAULT_FLAIRS, fetch_recent_posts
+from .platforms.reddit.client import ApifyFetchError, ApifyNotConfigured, fetch_recent_posts
 from .platforms.reddit.sync import sync_sentiment, tracked_player_names
 from .platforms.sleeper.client import SleeperAPIError, SleeperClient
 from .platforms.sleeper.sync import sync_league, sync_players
@@ -352,17 +352,29 @@ def sync_ffc_adp_cmd(qb_mode: str, teams: int, force: bool):
     click.echo(f"Synced {count} {qb_mode} ADP entries from FFC." if count else "FFC ADP cache fresh (<12h) — skipped. Use --force.")
 
 
+def _build_subreddit_flairs(pairs: tuple[tuple[str, str], ...]) -> dict[str, list[str] | None] | None:
+    if not pairs:
+        return None
+    result: dict[str, list[str] | None] = {}
+    for sub, flair in pairs:
+        result.setdefault(sub, [])
+        result[sub].append(flair)  # type: ignore[union-attr]
+    return result
+
+
 @cli.command("sync-reddit")
-@click.option("--limit", default=100, help="Posts to scan per subreddit.")
-@click.option("--subreddit", "subreddits", multiple=True, help="Repeatable. Defaults to r/DynastyFF only.")
+@click.option("--limit", default=100, help="Posts to scan across all requested subreddits.")
 @click.option(
-    "--flair",
-    "flairs",
+    "--sub-flair",
+    "sub_flair_pairs",
     multiple=True,
-    help="Repeatable. Only posts with a matching flair are scored. Defaults to 'Player Discussion' and 'News'. "
-    "Pass --flair '' (empty string) once to disable flair filtering entirely.",
+    nargs=2,
+    metavar="SUBREDDIT FLAIR",
+    help="Repeatable pair. e.g. --sub-flair DynastyFF \"Player Discussion\" --sub-flair DynastyFF News "
+    "--sub-flair fantasyfootball \"Player Discussion\". If omitted entirely, defaults to "
+    "DynastyFF (Player Discussion, News) + fantasyfootball (Player Discussion).",
 )
-def sync_reddit_cmd(limit: int, subreddits: tuple[str, ...], flairs: tuple[str, ...]):
+def sync_reddit_cmd(limit: int, sub_flair_pairs: tuple[tuple[str, str], ...]):
     """Pull recent Reddit posts (via Apify) and score sentiment for players in your synced leagues."""
     conn = db_module.get_connection()
     db_module.init_db(conn)
@@ -372,16 +384,10 @@ def sync_reddit_cmd(limit: int, subreddits: tuple[str, ...], flairs: tuple[str, 
         click.echo("No rostered players found — sync a league first.")
         return
 
-    subreddit_list = list(subreddits) or None
-    if flairs == ("",):
-        flair_list = None  # explicit opt-out
-    elif flairs:
-        flair_list = list(flairs)
-    else:
-        flair_list = DEFAULT_FLAIRS
+    subreddit_flairs = _build_subreddit_flairs(sub_flair_pairs)
 
     try:
-        posts = fetch_recent_posts(subreddits=subreddit_list, limit=limit, flairs=flair_list)
+        posts = fetch_recent_posts(subreddit_flairs=subreddit_flairs, limit=limit)
     except ApifyNotConfigured as exc:
         raise click.ClickException(str(exc))
     except ApifyFetchError as exc:

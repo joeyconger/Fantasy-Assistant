@@ -191,7 +191,7 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-122 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
+125 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
 the private-league auth path, the players table's platform-scoped primary
 key (prevents Sleeper/ESPN ID collisions), cross-platform name matching
 (suffixes, punctuation, ambiguous-duplicate handling), the rank-inefficiency
@@ -217,7 +217,7 @@ fantasy-assistant sync-weekly-points 1389373095143284736   # this week's + recen
 fantasy-assistant sync-ktc --format dynasty --qb-mode 1qb   # or --format devy, --qb-mode superflex
 fantasy-assistant sync-fantasypros
 fantasy-assistant sync-ffc-adp --qb-mode 1qb        # or --qb-mode superflex; real ADP for the draft board
-fantasy-assistant sync-reddit       # needs APIFY_API_TOKEN; defaults to r/DynastyFF, Player Discussion/News flairs
+fantasy-assistant sync-reddit       # needs APIFY_API_TOKEN; see "Reddit sentiment via Apify" for subreddit/flair defaults
 
 fantasy-assistant standings 1389373095143284736
 fantasy-assistant owners 1389373095143284736                      # find your owner_id for personalization
@@ -318,19 +318,26 @@ as `espn/rankings.py`'s rank-type guessing). Set `APIFY_API_TOKEN` and run
 a run that scans posts but scores zero players despite real matches
 existing both point at the assumptions in `client.py` needing a real look.
 
-**Scoped to dynasty use, by request**: defaults to r/DynastyFF only (not
-r/fantasyfootball), filtered to posts flaired "Player Discussion" or "News"
-— this app's actual sentiment use case is dynasty buy-low/sell-high, not
-general redraft chatter. Flair matching is case-insensitive substring, not
+**Scoped per subreddit, by request**: each subreddit gets its own flair
+allowlist, since r/DynastyFF's "Player Discussion"/"News" posts and
+r/fantasyfootball's "Player Discussion" posts (but not its "News", which is
+mostly redraft-irrelevant noise for this app) are the actual signal wanted.
+Defaults to `{"DynastyFF": ["Player Discussion", "News"], "fantasyfootball":
+["Player Discussion"]}`. Flair matching is case-insensitive substring, not
 exact equality, since real flairs are often decorated (e.g. "🏈 News"); a
-post with no determinable flair is dropped rather than let through, since
-silently including unknown-flair posts would defeat the point of asking for
-specific ones. Both are overridable per-run:
+post whose subreddit or flair can't be determined, or whose subreddit isn't
+in the ruleset at all, is dropped rather than let through. Overridable
+per-run with repeatable `--sub-flair SUBREDDIT FLAIR` pairs:
 
 ```powershell
-fantasy-assistant sync-reddit --subreddit DynastyFF --subreddit fantasyfootball
-fantasy-assistant sync-reddit --flair "Trade" --flair "Rookie Draft"
-fantasy-assistant sync-reddit --flair ''   # disables flair filtering entirely
+fantasy-assistant sync-reddit
+# uses the default ruleset above
+
+fantasy-assistant sync-reddit --sub-flair DynastyFF "Player Discussion" --sub-flair DynastyFF News --sub-flair fantasyfootball "Player Discussion"
+# same thing, spelled out explicitly
+
+fantasy-assistant sync-reddit --sub-flair DynastyFF Trade --sub-flair DynastyFF "Rookie Draft"
+# only Trade/Rookie Draft flaired posts from r/DynastyFF, nothing from r/fantasyfootball
 ```
 
 ## ESPN private league
@@ -423,5 +430,5 @@ src/fantasy_assistant/
     fantasypros/                # client (verified live), sync
     ffc/                        # client (UNVERIFIED), sync — real ADP for the draft board
     reddit/                     # client (Apify-based, UNVERIFIED), sync
-tests/                        # 122 tests, see "Run the tests" above
+tests/                        # 125 tests, see "Run the tests" above
 ```

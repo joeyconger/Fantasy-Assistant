@@ -1,10 +1,13 @@
-"""Tests the Apify-based Reddit client's defensive field extraction, flair
-filtering, and error handling against synthetic dataset-item JSON. Does NOT
-prove this matches the real live Apify actor (unverified, see client.py) —
-proves the extraction/filtering logic is internally correct for each
-variant it claims to handle, and that a genuinely unrecognized response
-raises ApifyFetchError instead of failing silently.
+"""Tests the Apify-based Reddit client's defensive field extraction,
+per-subreddit flair filtering, and error handling against synthetic
+dataset-item JSON. Does NOT prove this matches the real live Apify actor
+(unverified, see client.py) — proves the extraction/filtering logic is
+internally correct for each variant it claims to handle, and that a
+genuinely unrecognized response raises ApifyFetchError instead of failing
+silently.
 """
+
+import json as json_module
 
 import responses
 
@@ -86,7 +89,7 @@ def test_fetch_recent_posts_skips_items_with_no_title(monkeypatch):
     responses.add(
         responses.POST,
         URL,
-        json=[{"body": "no title here"}, {"title": "Has a title", "flair": "News"}],
+        json=[{"body": "no title here", "communityName": "DynastyFF", "flair": "News"}, {"title": "Has a title", "communityName": "DynastyFF", "flair": "News"}],
     )
 
     posts = fetch_recent_posts()
@@ -95,16 +98,13 @@ def test_fetch_recent_posts_skips_items_with_no_title(monkeypatch):
 
 
 @responses.activate
-def test_fetch_recent_posts_sends_subreddits_and_limit(monkeypatch):
+def test_fetch_recent_posts_sends_all_requested_subreddits_and_limit(monkeypatch):
     monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
     responses.add(responses.POST, URL, json=[])
 
-    fetch_recent_posts(subreddits=["nfl"], limit=25)
+    fetch_recent_posts(subreddit_flairs={"nfl": None}, limit=25)
 
-    request_body = responses.calls[0].request.body
-    import json as json_module
-
-    payload = json_module.loads(request_body)
+    payload = json_module.loads(responses.calls[0].request.body)
     assert payload["subreddits"] == ["nfl"]
     assert payload["maxItems"] == 25
 
@@ -133,35 +133,82 @@ def test_fetch_recent_posts_raises_on_http_error(monkeypatch):
         assert "402" in str(exc)
 
 
-# ---- flair filtering ----
+# ---- per-subreddit flair filtering ----
 
 
 @responses.activate
-def test_fetch_recent_posts_defaults_to_player_discussion_and_news_flairs(monkeypatch):
+def test_default_requests_both_dynastyff_and_fantasyfootball(monkeypatch):
+    monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
+    responses.add(responses.POST, URL, json=[])
+
+    fetch_recent_posts()
+
+    payload = json_module.loads(responses.calls[0].request.body)
+    assert set(payload["subreddits"]) == {"DynastyFF", "fantasyfootball"}
+
+
+@responses.activate
+def test_dynastyff_allows_player_discussion_and_news_by_default(monkeypatch):
     monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
     responses.add(
         responses.POST,
         URL,
         json=[
-            {"title": "Keep A", "flair": "Player Discussion"},
-            {"title": "Keep B", "flair": "News"},
-            {"title": "Drop me", "flair": "Waiver Wire"},
-            {"title": "No flair at all"},
+            {"title": "Keep A", "communityName": "DynastyFF", "flair": "Player Discussion"},
+            {"title": "Keep B", "communityName": "DynastyFF", "flair": "News"},
+            {"title": "Drop trade post", "communityName": "DynastyFF", "flair": "Trade"},
         ],
     )
 
     posts = fetch_recent_posts()
-    titles = {p["title"] for p in posts}
-    assert titles == {"Keep A", "Keep B"}
+    assert {p["title"] for p in posts} == {"Keep A", "Keep B"}
 
 
 @responses.activate
-def test_fetch_recent_posts_flair_match_is_case_insensitive_substring(monkeypatch):
+def test_fantasyfootball_only_allows_player_discussion_by_default(monkeypatch):
     monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
     responses.add(
         responses.POST,
         URL,
-        json=[{"title": "Emoji decorated flair", "flair": "\U0001f4f0 NEWS"}],
+        json=[
+            {"title": "Keep me", "communityName": "fantasyfootball", "flair": "Player Discussion"},
+            {"title": "Drop news post", "communityName": "fantasyfootball", "flair": "News"},
+        ],
+    )
+
+    posts = fetch_recent_posts()
+    assert [p["title"] for p in posts] == ["Keep me"]
+
+
+@responses.activate
+def test_post_from_unrequested_subreddit_is_dropped(monkeypatch):
+    monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
+    responses.add(
+        responses.POST,
+        URL,
+        json=[{"title": "Off-target sub", "communityName": "nfl", "flair": "Player Discussion"}],
+    )
+
+    posts = fetch_recent_posts()
+    assert posts == []
+
+
+@responses.activate
+def test_post_with_no_determinable_subreddit_is_dropped(monkeypatch):
+    monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
+    responses.add(responses.POST, URL, json=[{"title": "No subreddit field", "flair": "News"}])
+
+    posts = fetch_recent_posts()
+    assert posts == []
+
+
+@responses.activate
+def test_flair_match_is_case_insensitive_substring(monkeypatch):
+    monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
+    responses.add(
+        responses.POST,
+        URL,
+        json=[{"title": "Emoji decorated flair", "communityName": "DynastyFF", "flair": "\U0001f4f0 NEWS"}],
     )
 
     posts = fetch_recent_posts()
@@ -169,42 +216,29 @@ def test_fetch_recent_posts_flair_match_is_case_insensitive_substring(monkeypatc
 
 
 @responses.activate
-def test_fetch_recent_posts_flairs_none_disables_filtering(monkeypatch):
+def test_subreddit_with_none_flair_rule_gets_no_filter(monkeypatch):
     monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
     responses.add(
         responses.POST,
         URL,
-        json=[{"title": "Off-topic post", "flair": "Shitpost"}, {"title": "No flair"}],
+        json=[{"title": "Off-topic post", "communityName": "nfl", "flair": "Shitpost"}],
     )
 
-    posts = fetch_recent_posts(flairs=None)
-    assert len(posts) == 2
+    posts = fetch_recent_posts(subreddit_flairs={"nfl": None})
+    assert len(posts) == 1
 
 
 @responses.activate
-def test_fetch_recent_posts_custom_flairs_override_default(monkeypatch):
+def test_custom_subreddit_flairs_override_default(monkeypatch):
     monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
     responses.add(
         responses.POST,
         URL,
         json=[
-            {"title": "Trade post", "flair": "Trade"},
-            {"title": "News post", "flair": "News"},
+            {"title": "Trade post", "communityName": "DynastyFF", "flair": "Trade"},
+            {"title": "Discussion post", "communityName": "DynastyFF", "flair": "Player Discussion"},
         ],
     )
 
-    posts = fetch_recent_posts(flairs=["Trade"])
+    posts = fetch_recent_posts(subreddit_flairs={"DynastyFF": ["Trade"]})
     assert [p["title"] for p in posts] == ["Trade post"]
-
-
-@responses.activate
-def test_default_subreddit_is_dynastyff_only(monkeypatch):
-    monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
-    responses.add(responses.POST, URL, json=[])
-
-    fetch_recent_posts()
-
-    import json as json_module
-
-    payload = json_module.loads(responses.calls[0].request.body)
-    assert payload["subreddits"] == ["DynastyFF"]
