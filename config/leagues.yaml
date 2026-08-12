@@ -23,10 +23,10 @@ sleeper:
     my_owner_id: null
   - league_id: "1315737573154390016"
     format: dynasty   # Weekend Warriors
-    my_owner_id: null
+    my_owner_id: "515284483391959040"
   - league_id: "1313961246109761536"
     format: devy      # Dollars for Devys
-    my_owner_id: null
+    my_owner_id: "515284483391959040"
 
 espn:
   league_id: "509682142"    # "Lads" — confirmed Superflex (auto-detected live from
