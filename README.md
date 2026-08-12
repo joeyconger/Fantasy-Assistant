@@ -17,8 +17,8 @@ Railway) as a small shared web dashboard with a Sleeper/ESPN-app-style design
 | Sleeper rank data (`search_rank`) | ✅ Verified live (part of the already-proven player sync). Still used by waiver-targets/roster-needs — but no longer by the draft board, see below. |
 | ESPN full player-pool rankings/ADP | ✅ **Verified live** — 2918 players synced, correct rank/ADP order (Gibbs #1, Bijan #2, Puka #3 — matches real ADP). |
 | — 1QB vs Superflex split | ✅ **Verified live** — ESPN's payload genuinely has a distinct Superflex rank type (unconfirmed until tested; turned out to exist). Confirmed meaningful, not noise: nearly every top-25 Superflex divergence is a QB valued much higher by ESPN in that mode, exactly the expected real-world pattern. |
-| Fantasy Football Calculator (FFC) real ADP | ⚠️ **UNVERIFIED** — `platforms/ffc/`. Replaces Sleeper's `search_rank` on the draft board specifically, since search_rank turned out to be an interest/search-volume metric, not real ADP (a hyped rookie QB was ranking above an established veteran on search_rank alone). FFC's free public REST API returns real draft-pick ADP instead; needs `sync-ffc-adp` run live to confirm the response shape matches what's assumed. |
-| Draft board (rank inefficiency finder) | ⚠️ Previously verified live against Sleeper vs ESPN; now re-anchored to FFC market ADP vs ESPN (see above) and not yet re-verified live in that form. Run `sync-ffc-adp` + `draft-board` and check the numbers look sane. |
+| Fantasy Football Calculator (FFC) real ADP | ✅ **Verified live** — `platforms/ffc/`. Replaces Sleeper's `search_rank` on the draft board specifically, since search_rank turned out to be an interest/search-volume metric, not real ADP (a hyped rookie QB was ranking above an established veteran on search_rank alone). `sync-ffc-adp` confirmed working against the real API. |
+| Draft board (rank inefficiency finder) | ✅ **Verified live** — re-anchored to FFC market ADP vs ESPN rank; also confirmed the defensive-position filter is real (not dead code) — IDP players like LBs were leaking into results pre-fix since Sleeper and ESPN happen to label that position identically. |
 | Weekly performance trend (Sleeper matchups) | ⚠️ Built + tested; no real games played yet this season to sync (it's August) |
 | Waiver/trade target identifier | ✅ Platform-awareness bug fixed and verified (Sleeper and ESPN both); still needs real weekly-points data to say anything — no games played yet this season |
 | KeepTradeCut (KTC) scraper | ✅ **Verified live** — dynasty and devy, both 1QB and Superflex confirmed with real player data (Ja'Marr Chase, Bijan Robinson, Jeremiah Smith, Arch Manning, etc., sane values). Fixed a real bug found during verification: KTC nests both qb_modes per-record (`oneQBValues`/`superflexValues`), not flat top-level fields — the original `?format=2` URL guess was wrong and unnecessary, one page load has both. |
@@ -29,13 +29,12 @@ Railway) as a small shared web dashboard with a Sleeper/ESPN-app-style design
 | Buy-low/sell-high engine | ⚠️ Combines the above signals correctly (verified via synthetic data + now real KTC + FantasyPros data). Still needs weekly-points data to say anything for a given league — no games played yet this season. |
 | Devy watchlist | ✅ Fully built and tested (it's just a manual list — no external dependency), and now cross-references real KTC devy values |
 
-**Bottom line**: every data source except Reddit (out of scope), X/Twitter
-(skipped), and the newly-added FFC ADP (not yet live-verified) is verified
-live — Sleeper, ESPN (league sync + player-pool rankings, both qb_modes),
-KTC, and FantasyPros. Phase A (functional gaps) is complete. Phase B
-(design polish + personalization + trade analyzer) is also complete. What's
-left is real weekly-points data (just needs the season to start) and
-live-verifying `sync-ffc-adp`.
+**Bottom line**: every data source except Reddit (out of scope) and
+X/Twitter (skipped) is verified live — Sleeper, ESPN (league sync +
+player-pool rankings, both qb_modes), KTC, FantasyPros, and now FFC. Phase A
+(functional gaps) is complete. Phase B (design polish + personalization +
+trade analyzer) is also complete. What's left is real weekly-points data,
+which just needs the season to start.
 
 ## Phase B: design polish + features — complete
 
@@ -166,10 +165,14 @@ this only covers redraft.
 The web/CLI column previously labeled "Sleeper Rank" is now "Market ADP" /
 "ADP" — an honest label, since this isn't Sleeper-specific data anymore.
 
-**UNVERIFIED**: this sandbox can't reach fantasyfootballcalculator.com, so
-the client's assumed response shape (`platforms/ffc/client.py`) hasn't been
-tested against the real API. Run `fantasy-assistant sync-ffc-adp` locally —
-an `FFCParseError` means the assumption is wrong and needs a real look.
+**Verified live**: `sync-ffc-adp` confirmed working against the real API
+for both qb_modes. Re-ran `draft-board` afterward and confirmed it now
+compares real market ADP against ESPN — and confirmed the defensive-position
+filter (added in the previous fix) is genuinely necessary, not dead code:
+before pulling this fix, the board was showing LB players (TJ Watt, Micah
+Parsons, Nik Bonitto, Byron Young) mixed in with skill positions, since
+Sleeper and ESPN happen to label individual defensive positions identically
+even though team defenses (DEF vs D/ST) never collide.
 
 ## Setup
 
