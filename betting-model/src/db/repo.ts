@@ -699,6 +699,62 @@ export async function listBacktestRuns(): Promise<BacktestRunSummary[]> {
   }));
 }
 
+export interface GameHistoryRow {
+  gameId: number;
+  week: number;
+  gameDate: Date | null;
+  homeTeam: string;
+  awayTeam: string;
+  homeScore: number | null;
+  awayScore: number | null;
+  status: string;
+  openingSpreadHome: number | null;
+  closingSpreadHome: number | null;
+}
+
+/** Every game in a sport/season (any week, any status) with its team names and opening/closing lines — the raw historical-data browser behind /games. */
+export async function getGameHistoryForSeason(sport: Sport, season: number): Promise<GameHistoryRow[]> {
+  const result = await pool.query<{
+    game_id: number;
+    week: number;
+    game_date: Date | null;
+    home: string;
+    away: string;
+    home_score: number | null;
+    away_score: number | null;
+    status: string;
+    opening_spread_home: number | null;
+    closing_spread_home: number | null;
+  }>(
+    `SELECT g.id AS game_id, g.week, g.game_date, ht.name AS home, at.name AS away,
+            g.home_score, g.away_score, g.status,
+            (SELECT os.spread_home FROM odds_snapshots os
+             WHERE os.game_id = g.id AND os.snapshot_type = 'opening' AND os.spread_home IS NOT NULL
+             ORDER BY os.captured_at ASC LIMIT 1) AS opening_spread_home,
+            (SELECT os.spread_home FROM odds_snapshots os
+             WHERE os.game_id = g.id AND os.snapshot_type = 'closing' AND os.spread_home IS NOT NULL
+             ORDER BY os.captured_at DESC LIMIT 1) AS closing_spread_home
+     FROM games g
+     JOIN teams ht ON ht.id = g.home_team_id
+     JOIN teams at ON at.id = g.away_team_id
+     WHERE g.sport = $1 AND g.season = $2
+     ORDER BY g.week ASC, g.game_date ASC NULLS LAST, g.id ASC`,
+    [sport, season],
+  );
+  return result.rows.map((r) => ({
+    gameId: r.game_id,
+    week: r.week,
+    gameDate: r.game_date,
+    homeTeam: r.home,
+    awayTeam: r.away,
+    homeScore: r.home_score,
+    awayScore: r.away_score,
+    status: r.status,
+    openingSpreadHome: r.opening_spread_home,
+    closingSpreadHome: r.closing_spread_home,
+  }));
+}
+
 export async function upsertTeamGameStats(input: UpsertTeamGameStatsInput): Promise<void> {
   await pool.query(
     `INSERT INTO team_game_stats (

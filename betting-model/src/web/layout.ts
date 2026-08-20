@@ -226,6 +226,7 @@ function topbar(activePath: string): string {
           ${link("/", "Backtests")}
           ${link("/ratings", "Ratings")}
           ${link("/predictions", "Predictions")}
+          ${link("/games", "Game history")}
         </nav>
         <span class="topbar-tag">Diagnostics · not live picks</span>
       </div>

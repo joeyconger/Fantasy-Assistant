@@ -4,7 +4,8 @@ import { isBasicAuthorized, requireBasicAuth } from "./web/basicAuth.js";
 import { renderHome } from "./web/pages/home.js";
 import { renderBacktestReport } from "./web/pages/backtestReport.js";
 import { renderRatingsPage, renderPredictionsPage } from "./web/pages/ratings.js";
-import { listBacktestRuns, getTeamRatingsForWeek, getPredictionsForWeek } from "./db/repo.js";
+import { renderGamesPage } from "./web/pages/games.js";
+import { listBacktestRuns, getTeamRatingsForWeek, getPredictionsForWeek, getGameHistoryForSeason } from "./db/repo.js";
 import type { Sport } from "./db/repo.js";
 import { getOverallReport, getOpeningCoverRate, getThresholdReport, getSeasonReport } from "./backtest/report.js";
 import { listJobs, getJob, JOB_STARTERS } from "./adminJobs.js";
@@ -206,6 +207,14 @@ async function handleRequest(
     const predictions =
       isSport(sport) && season && week ? await getPredictionsForWeek(sport, Number(season), Number(week)) : null;
     html(res, renderPredictionsPage(sport || "nfl", season, week, predictions));
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/games") {
+    const sport = url.searchParams.get("sport") ?? "";
+    const season = url.searchParams.get("season") ?? "";
+    const games = isSport(sport) && season ? await getGameHistoryForSeason(sport, Number(season)) : null;
+    html(res, renderGamesPage(sport || "nfl", season, games));
     return;
   }
 
