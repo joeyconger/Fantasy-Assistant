@@ -5,7 +5,15 @@ import { renderHome } from "./web/pages/home.js";
 import { renderBacktestReport } from "./web/pages/backtestReport.js";
 import { renderRatingsPage, renderPredictionsPage } from "./web/pages/ratings.js";
 import { renderGamesPage } from "./web/pages/games.js";
-import { listBacktestRuns, getTeamRatingsForWeek, getPredictionsForWeek, getGameHistoryForSeason } from "./db/repo.js";
+import { renderTeamPage } from "./web/pages/team.js";
+import {
+  listBacktestRuns,
+  getTeamRatingsForWeek,
+  getPredictionsForWeek,
+  getGameHistoryForSeason,
+  getTeamById,
+  getRatingHistoryForTeam,
+} from "./db/repo.js";
 import type { Sport } from "./db/repo.js";
 import { getOverallReport, getOpeningCoverRate, getThresholdReport, getSeasonReport } from "./backtest/report.js";
 import { listJobs, getJob, JOB_STARTERS } from "./adminJobs.js";
@@ -207,6 +215,19 @@ async function handleRequest(
     const predictions =
       isSport(sport) && season && week ? await getPredictionsForWeek(sport, Number(season), Number(week)) : null;
     html(res, renderPredictionsPage(sport || "nfl", season, week, predictions));
+    return;
+  }
+
+  if (req.method === "GET" && /^\/teams\/\d+$/.test(url.pathname)) {
+    const teamId = Number(url.pathname.split("/")[2]);
+    const team = await getTeamById(teamId);
+    if (!team) {
+      res.writeHead(404, { "Content-Type": "text/plain" });
+      res.end("team not found");
+      return;
+    }
+    const history = await getRatingHistoryForTeam(teamId, team.sport);
+    html(res, renderTeamPage(team, history));
     return;
   }
 

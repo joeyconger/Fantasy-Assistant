@@ -68,7 +68,7 @@ export function renderRatingsPage(
               .map(
                 (r, i) => `<tr>
                   <td class="muted">${i + 1}</td>
-                  <td>${escapeHtml(r.teamName)}</td>
+                  <td><a class="run-link" href="/teams/${r.teamId}?sport=${escapeHtml(sport)}">${escapeHtml(r.teamName)}</a></td>
                   <td class="num">${r.rating >= 0 ? "+" : ""}${r.rating.toFixed(2)}</td>
                   <td>${powerBar(r.rating, maxAbs)}</td>
                   <td class="num muted">${r.ratingError === null ? "—" : r.ratingError.toFixed(2)}</td>

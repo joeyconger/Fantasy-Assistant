@@ -417,20 +417,53 @@ export async function getGamesPlayedCount(teamId: number, sport: Sport, season: 
 }
 
 export interface TeamRatingRow {
+  teamId: number;
   teamName: string;
   rating: number;
   ratingError: number | null;
 }
 
 export async function getTeamRatingsForWeek(sport: Sport, season: number, throughWeek: number): Promise<TeamRatingRow[]> {
-  const result = await pool.query<{ name: string; rating: number; rating_error: number | null }>(
-    `SELECT t.name, tr.rating, tr.rating_error
+  const result = await pool.query<{ team_id: number; name: string; rating: number; rating_error: number | null }>(
+    `SELECT t.id AS team_id, t.name, tr.rating, tr.rating_error
      FROM team_ratings tr JOIN teams t ON t.id = tr.team_id
      WHERE tr.sport = $1 AND tr.season = $2 AND tr.through_week = $3 AND tr.method = 'elo'
      ORDER BY tr.rating DESC`,
     [sport, season, throughWeek],
   );
-  return result.rows.map((r) => ({ teamName: r.name, rating: r.rating, ratingError: r.rating_error }));
+  return result.rows.map((r) => ({ teamId: r.team_id, teamName: r.name, rating: r.rating, ratingError: r.rating_error }));
+}
+
+export interface TeamInfo {
+  id: number;
+  name: string;
+  sport: Sport;
+  conference: string | null;
+}
+
+export async function getTeamById(teamId: number): Promise<TeamInfo | undefined> {
+  const result = await pool.query<{ id: number; name: string; sport: Sport; conference: string | null }>(
+    `SELECT id, name, sport, conference FROM teams WHERE id = $1`,
+    [teamId],
+  );
+  return result.rows[0];
+}
+
+export interface RatingHistoryPoint {
+  season: number;
+  throughWeek: number;
+  rating: number;
+}
+
+/** A team's full rating trajectory across every season/week checkpoint it's been rated at, oldest first — the input to the /teams/:id trend chart. */
+export async function getRatingHistoryForTeam(teamId: number, sport: Sport): Promise<RatingHistoryPoint[]> {
+  const result = await pool.query<{ season: number; through_week: number; rating: number }>(
+    `SELECT season, through_week, rating FROM team_ratings
+     WHERE team_id = $1 AND sport = $2 AND method = 'elo'
+     ORDER BY season ASC, through_week ASC`,
+    [teamId, sport],
+  );
+  return result.rows.map((r) => ({ season: r.season, throughWeek: r.through_week, rating: r.rating }));
 }
 
 /** A team's most recent rating strictly before a given week — the input to predictSpread. Defaults to 0 (league average) if the team has no rating yet (early season / never rated). */
