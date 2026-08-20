@@ -1,5 +1,6 @@
 import { paramsForSport } from "../ratings/config.js";
 import { predictSpread } from "../ratings/elo.js";
+import type { RatingParams } from "../ratings/elo.js";
 import { determinePickSide, computeCovered, computeClv } from "./clv.js";
 import {
   getFinalGamesForBacktest,
@@ -15,6 +16,15 @@ export interface BacktestParams {
   seasonStart: number;
   seasonEnd: number;
   name: string;
+  /**
+   * Only affects prediction-time params (homeFieldAdvantage,
+   * marketShrinkageK, baseErrorPoints) — team_ratings itself must already
+   * have been computed with matching sosWeight/performanceWeight/
+   * seasonCarryover for a sweep over THOSE params to mean anything (see
+   * backtest/sweep.ts). Passing a different value here without
+   * recomputing ratings first silently sweeps nothing for those three.
+   */
+  ratingParams?: RatingParams;
 }
 
 export interface RunBacktestResult {
@@ -34,7 +44,7 @@ export interface RunBacktestResult {
  * results.
  */
 export async function runBacktest(input: BacktestParams): Promise<RunBacktestResult> {
-  const params = paramsForSport(input.sport);
+  const params = input.ratingParams ?? paramsForSport(input.sport);
   const backtestRunId = await createBacktestRun({
     name: input.name,
     method: "elo",

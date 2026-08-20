@@ -10,6 +10,9 @@ import { syncNflWeather } from "./ingest/weather/syncWeather.js";
 import { computeRatingsForSeason, computeRatingsForAllSeasons } from "./ratings/computeRatings.js";
 import { predictWeek } from "./ratings/predict.js";
 import { runBacktest } from "./backtest/run.js";
+import { runParamSweep } from "./backtest/sweep.js";
+import { paramsForSport } from "./ratings/config.js";
+import type { RatingParams } from "./ratings/elo.js";
 import type { Sport } from "./db/repo.js";
 
 // Background job pattern for Railway: a long-running ingest/compute/backtest
@@ -169,5 +172,29 @@ export const JOB_STARTERS: Record<string, JobStarter> = {
       const name = typeof params.name === "string" ? params.name : `${sport} ${seasonStart}-${seasonEnd}`;
       const result = await runBacktest({ sport, seasonStart, seasonEnd, name });
       log(job, `run #${result.backtestRunId}: ${result.gamesScored} games scored, ${result.gamesSkippedNoOdds} skipped (no odds)`);
+    }),
+  "backtest-sweep": (params) =>
+    runJob("backtest-sweep", async (job) => {
+      const sport = requireSport(params);
+      const seasonStart = requireNumber(params, "seasonStart");
+      const seasonEnd = requireNumber(params, "seasonEnd");
+      const param = params.param as keyof RatingParams;
+      const base = paramsForSport(sport);
+      if (!(param in base)) throw new Error(`params.param must be one of: ${Object.keys(base).join(", ")}`);
+      const values = params.values;
+      if (!Array.isArray(values)) throw new Error("params.values must be an array of numbers");
+      const variants = values.map((value) => ({ label: `${param}=${value}`, params: { ...base, [param]: Number(value) } }));
+      log(job, `sweeping ${param} over [${values.join(", ")}] for ${sport} ${seasonStart}-${seasonEnd}`);
+      const results = await runParamSweep(sport, seasonStart, seasonEnd, variants);
+      for (const r of results) {
+        log(
+          job,
+          `${r.label}: run #${r.backtestRunId}, ${r.gamesScored} games, cover(close)=${r.overall.coverRate?.toFixed(3) ?? "n/a"}, cover(open)=${r.openingCover.coverRate?.toFixed(3) ?? "n/a"}, avgClv=${r.overall.avgClv?.toFixed(3) ?? "n/a"}`,
+        );
+      }
+      log(
+        job,
+        `NOTE: team_ratings for ${sport} ${seasonStart}-${seasonEnd} now reflects the LAST variant tried — re-run ratings-compute with your chosen params before trusting that data outside this sweep.`,
+      );
     }),
 };

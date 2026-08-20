@@ -25,8 +25,11 @@ export interface ComputeRatingsResult {
  * readers should carry the most recent prior row forward, which
  * getTeamRatingBeforeWeek already does.
  */
-export async function computeRatingsForSeason(sport: Sport, season: number): Promise<ComputeRatingsResult> {
-  const params = paramsForSport(sport);
+export async function computeRatingsForSeason(
+  sport: Sport,
+  season: number,
+  params = paramsForSport(sport),
+): Promise<ComputeRatingsResult> {
   const games = await getFinalGamesWithStatsForSeason(sport, season);
 
   const ratings = new Map<number, number>();
