@@ -5,7 +5,7 @@
     "buildCommand": "pip install -e ."
   },
   "deploy": {
-    "startCommand": "fantasy-assistant sync-draft-data && fantasy-assistant sync-market-values",
+    "startCommand": "fantasy-assistant sync-draft-data --force && fantasy-assistant sync-market-values --force",
     "cronSchedule": "0 13 * * *",
     "restartPolicyType": "NEVER"
   }

@@ -146,12 +146,12 @@ def sync_all_cmd():
                 click.echo(f"ESPN rankings: skipped — {exc}")
 
 
-def _sync_rank_data(conn) -> None:
+def _sync_rank_data(conn, force: bool = False) -> None:
     """Sync overall-rank data: Sleeper search_rank (from sync-players) + ESPN's full player
     pool. Shared by sync-rankings and sync-draft-data so both stay in sync."""
     client = SleeperClient()
     try:
-        count = sync_players(conn, client)
+        count = sync_players(conn, client, force=force)
         click.echo(f"Sleeper rankings: refreshed with player sync ({count} players)" if count else "Sleeper rankings: player cache fresh, skipped")
     except SleeperAPIError as exc:
         raise click.ClickException(str(exc))
@@ -172,11 +172,12 @@ def _sync_rank_data(conn) -> None:
 
 
 @cli.command("sync-rankings")
-def sync_rankings_cmd():
+@click.option("--force", is_flag=True, help="Bypass Sleeper's 24h player-pool cache and refetch.")
+def sync_rankings_cmd(force: bool):
     """Sync overall-rank/ADP data: Sleeper search_rank (from sync-players) + ESPN's full player pool."""
     conn = db_module.get_connection()
     db_module.init_db(conn)
-    _sync_rank_data(conn)
+    _sync_rank_data(conn, force=force)
 
 
 @cli.command("draft-board")
@@ -391,7 +392,7 @@ def sync_draft_data_cmd(teams: int, force: bool):
     conn = db_module.get_connection()
     db_module.init_db(conn)
 
-    _sync_rank_data(conn)
+    _sync_rank_data(conn, force=force)
 
     ffc_client = FFCClient()
     for qb_mode in ("1qb", "superflex"):
