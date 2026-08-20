@@ -28,17 +28,27 @@ diagnostics — nothing it renders is a betting recommendation.
 
 **Important caveat on Phases 2–4:** this repo has no real historical odds/
 results ingested yet (Phase 1's odds/injuries/weather ingestion is still
-either scaffolded-only or unrun against a real DB — see the rows above). The
-rating model and backtest harness are correct and tested against synthetic,
-hand-computed fixtures (`npm run typecheck` clean; see the git history for
-the local-Postgres integration tests run during development), and the
-dashboard has been visually verified end-to-end against seeded demo data —
-but none of `NFL_PARAMS`/`CFB_PARAMS` in `src/ratings/config.ts` have been
-calibrated or walk-forward validated against real data, because none exists
-in this DB yet. Next real step: finish Phase 1 ingestion against a real
-Postgres instance (CFBD/Odds API keys required), then re-run
-`ratings:compute` and `backtest:run` against real seasons before drawing any
-conclusions from the numbers the dashboard shows.
+either scaffolded-only or unrun against a real DB — see the rows above,
+including the SBR historical-odds importer, which is still a documented
+scaffold: real download access wasn't available to finish it against a
+real file, and the column mapping deliberately isn't guessed blind — see
+`src/ingest/odds/sbrImport.ts`). The rating model and backtest harness are
+correct and tested against synthetic, hand-computed fixtures — `npm test`
+runs a persisted suite for the pure math (`src/ratings/elo.test.ts`,
+`src/backtest/clv.test.ts`), and the DB-orchestration layer (rating
+computation, prediction, backtest scoring, the parameter sweep tool) was
+additionally verified against a real local Postgres instance with
+hand-computed fixtures during development (see git history for those
+scripts) — and the dashboard has been visually verified end-to-end against
+seeded demo data. But none of `NFL_PARAMS`/`CFB_PARAMS` in
+`src/ratings/config.ts` have been calibrated or walk-forward validated
+against real data, because none exists in this DB yet. Next real step:
+finish Phase 1 ingestion against a real Postgres instance (CFBD/Odds API
+keys required, plus a manually-downloaded SBR season file to finish the
+historical odds importer), then re-run `ratings:compute` and
+`backtest:run` against real seasons — and use `backtest sweep` to actually
+calibrate the rating params — before drawing any conclusions from the
+numbers the dashboard shows.
 
 ## Why this lives here
 
@@ -58,6 +68,13 @@ touches `src/fantasy_assistant/`.
   once each. No heavy migration framework.
 - Env-based config (`src/config.ts`, `.env.example`) — same shape as the
   other Railway apps this follows
+- Testing: `npm test` runs a persisted `node:test` suite (via `tsx --test`,
+  no new dependency) over the pure math in `src/ratings/elo.ts` and
+  `src/backtest/clv.ts` — the two files most likely to silently break in a
+  way that still runs without erroring. DB-orchestration code doesn't have
+  a persisted suite (would need a scratch Postgres instance wired into CI);
+  it's been verified by hand against local Postgres during development —
+  see git history for those scripts if you need to re-verify after a change
 - Deploy target: Railway (Postgres plugin + this service). Nothing here
   runs as a long-lived server yet — Phase 1-3 are one-off/scheduled scripts,
   not a web app. `railway.json`'s start command just runs migrations on
@@ -218,14 +235,17 @@ src/
     odds/                       # current lines (Odds API) + historical archive import (scaffold)
     injuries/                    # ESPN unofficial injuries (unverified)
     weather/                      # Open-Meteo, NFL stadiums
-  ratings/                # Phase 2 — EPA-driven Elo, market-anchored (elo.ts, config.ts,
-                           #   computeRatings.ts, predict.ts) + CLI (index.ts)
-  backtest/                # Phase 3 — clv.ts (pure scoring), run.ts (orchestration),
+  ratings/                # Phase 2 — EPA-driven Elo, market-anchored (elo.ts + elo.test.ts,
+                           #   config.ts, computeRatings.ts, predict.ts) + CLI (index.ts)
+  backtest/                # Phase 3 — clv.ts (pure scoring) + clv.test.ts, run.ts
+                           #   (orchestration), sweep.ts (param calibration tool),
                            #   report.ts (aggregation queries) + CLI (index.ts)
   web/                    # Phase 4 — read-only dashboard: layout.ts (design system),
-                           #   charts.ts (SVG bar chart), basicAuth.ts, pages/
+                           #   charts.ts (SVG bar + line charts), basicAuth.ts,
+                           #   pages/ (home, backtestReport, ratings/predictions,
+                           #   team detail with rating trend, game history)
   server.ts               # HTTP server: dashboard routes + /query + /admin/jobs
-  adminJobs.ts             # background job runner (ingest/ratings/backtest via POST /admin/jobs/:name)
+  adminJobs.ts             # background job runner (ingest/ratings/backtest/sweep via POST /admin/jobs/:name)
 ```
 
 ## What's next
@@ -236,16 +256,20 @@ src/
 2. Finish `src/ingest/odds/sbrImport.ts` against a real downloaded
    SportsbookReviewsOnline file — the backtest harness needs real opening
    *and* closing lines (see "Important caveat on Phases 2–4" above), and
-   currently has neither.
+   currently has neither. (Attempted this during development; the sandbox
+   doing the work had no route to sportsbookreviewsonline.com to download a
+   real file against, so the scaffold is still exactly that — a scaffold.)
 3. Once real games/stats/odds are ingested: `npm run ratings:compute --
    --sport cfb` (or `nfl`), then `npm run backtest:run -- --sport cfb
    --seasonStart 2022 --seasonEnd 2024`, then actually look at the numbers
    the dashboard shows before trusting any of it.
 4. Calibrate/walk-forward-validate `NFL_PARAMS`/`CFB_PARAMS` in
    `src/ratings/config.ts` against that real data — the current values are
-   untested starting defaults, not backtested numbers. A small parameter
-   sweep tool (vary one param, re-run the backtest, compare) would be a
-   reasonable next addition to `src/backtest/`.
+   untested starting defaults, not backtested numbers. Use `npm run
+   backtest:sweep -- --sport cfb --seasonStart 2022 --seasonEnd 2024
+   --param sosWeight --values 0,0.2,0.4,0.6` (any `RatingParams` key works)
+   — see `src/backtest/sweep.ts`'s doc comment for what it does and does
+   not sweep correctly before relying on it.
 5. On Railway: set `DASHBOARD_USER`/`DASHBOARD_PASSWORD` (HTML dashboard,
    HTTP Basic auth) and `ADMIN_TOKEN` (bearer auth for `/query` and
    `/admin/jobs/*`) alongside the existing `DATABASE_URL`/`CFBD_API_KEY`/
