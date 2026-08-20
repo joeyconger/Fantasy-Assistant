@@ -15,14 +15,30 @@ built to measure against the closing line, not the final score.
 | 1. Data layer — odds (historical, for backtesting) | ⚠️ Scaffolded only — see "Odds data" below, needs a real SBR file to finish |
 | 1. Data layer — injuries | ⚠️ Built against ESPN's unofficial endpoint, **UNVERIFIED** — see "Injuries" below |
 | 1. Data layer — weather | ✅ Built (Open-Meteo), NFL only — CFB stadiums not yet mapped |
-| 2. Rating model | 🚫 Not started |
-| 3. Backtest harness | 🚫 Not started |
-| 4. Weekly picks output | 🚫 **Gated — do not build until Phase 3 backtest results are reviewed together** |
+| 2. Rating model | ✅ EPA-driven, market-anchored Elo (`src/ratings/`) — built and verified against local Postgres with hand-computed fixtures; **NOT calibrated against real data** (see below) |
+| 3. Backtest harness | ✅ Built (`src/backtest/`) — opening-line-anchored, scored vs. closing; verified against local Postgres with hand-computed fixtures |
+| 4. Diagnostics dashboard | ✅ Built (`src/server.ts`, `src/web/`) — read-only: run list, backtest report (tabs, charts), power ratings, raw predictions. **Not a picks feature.** |
+| 5. Live picks output | 🚫 **Gated — do not build until a real backtest (real ingested data) shows real CLV signal and we've reviewed it together** |
 
-**This repo does not produce live picks.** There is no Phase 4 code yet, and
-there won't be until the Phase 3 backtest shows real CLV signal and we've
-looked at the results together. If you're reading this later and Phase 4
-exists, check its own status notes before trusting anything it outputs.
+**This repo does not produce live picks.** There is no picks-output code, and
+there won't be until a backtest against *real* ingested data (not the
+synthetic fixtures used to verify the harness itself) shows real CLV signal
+and we've looked at the results together. The dashboard is read-only
+diagnostics — nothing it renders is a betting recommendation.
+
+**Important caveat on Phases 2–4:** this repo has no real historical odds/
+results ingested yet (Phase 1's odds/injuries/weather ingestion is still
+either scaffolded-only or unrun against a real DB — see the rows above). The
+rating model and backtest harness are correct and tested against synthetic,
+hand-computed fixtures (`npm run typecheck` clean; see the git history for
+the local-Postgres integration tests run during development), and the
+dashboard has been visually verified end-to-end against seeded demo data —
+but none of `NFL_PARAMS`/`CFB_PARAMS` in `src/ratings/config.ts` have been
+calibrated or walk-forward validated against real data, because none exists
+in this DB yet. Next real step: finish Phase 1 ingestion against a real
+Postgres instance (CFBD/Odds API keys required), then re-run
+`ratings:compute` and `backtest:run` against real seasons before drawing any
+conclusions from the numbers the dashboard shows.
 
 ## Why this lives here
 
@@ -202,8 +218,14 @@ src/
     odds/                       # current lines (Odds API) + historical archive import (scaffold)
     injuries/                    # ESPN unofficial injuries (unverified)
     weather/                      # Open-Meteo, NFL stadiums
-  ratings/                # Phase 2 — not started
-  backtest/                # Phase 3 — not started
+  ratings/                # Phase 2 — EPA-driven Elo, market-anchored (elo.ts, config.ts,
+                           #   computeRatings.ts, predict.ts) + CLI (index.ts)
+  backtest/                # Phase 3 — clv.ts (pure scoring), run.ts (orchestration),
+                           #   report.ts (aggregation queries) + CLI (index.ts)
+  web/                    # Phase 4 — read-only dashboard: layout.ts (design system),
+                           #   charts.ts (SVG bar chart), basicAuth.ts, pages/
+  server.ts               # HTTP server: dashboard routes + /query + /admin/jobs
+  adminJobs.ts             # background job runner (ingest/ratings/backtest via POST /admin/jobs/:name)
 ```
 
 ## What's next
@@ -212,10 +234,27 @@ src/
    run the CFBD + nflverse ingestion for a couple of recent seasons to
    sanity-check real data lands correctly.
 2. Finish `src/ingest/odds/sbrImport.ts` against a real downloaded
-   SportsbookReviewsOnline file.
-3. Phase 2: the rating model (Elo-like or ridge regression — TBD which fits
-   better once real data is in hand), anchored to market lines, with a
-   stronger SOS adjustment for CFB than NFL.
-4. Phase 3: the backtest harness, run against 2-3 completed seasons, with
-   CLV reporting by threshold and by sport/week. **Live picks (Phase 4) do
-   not get built until this is done and reviewed.**
+   SportsbookReviewsOnline file — the backtest harness needs real opening
+   *and* closing lines (see "Important caveat on Phases 2–4" above), and
+   currently has neither.
+3. Once real games/stats/odds are ingested: `npm run ratings:compute --
+   --sport cfb` (or `nfl`), then `npm run backtest:run -- --sport cfb
+   --seasonStart 2022 --seasonEnd 2024`, then actually look at the numbers
+   the dashboard shows before trusting any of it.
+4. Calibrate/walk-forward-validate `NFL_PARAMS`/`CFB_PARAMS` in
+   `src/ratings/config.ts` against that real data — the current values are
+   untested starting defaults, not backtested numbers. A small parameter
+   sweep tool (vary one param, re-run the backtest, compare) would be a
+   reasonable next addition to `src/backtest/`.
+5. On Railway: set `DASHBOARD_USER`/`DASHBOARD_PASSWORD` (HTML dashboard,
+   HTTP Basic auth) and `ADMIN_TOKEN` (bearer auth for `/query` and
+   `/admin/jobs/*`) alongside the existing `DATABASE_URL`/`CFBD_API_KEY`/
+   `ODDS_API_KEY`. Trigger ingestion/ratings/backtest jobs via `POST
+   /admin/jobs/<name>` (see `src/adminJobs.ts` for the full list and the
+   params each job expects) rather than running them inline — same
+   healthcheck-timeout reasoning as any other long job on a Railway
+   `startCommand`.
+
+**Live picks output is still not built, and won't be until a real backtest
+shows real CLV signal and it's been reviewed.** The dashboard's charts and
+tables are diagnostics for that review, not a recommendation engine.

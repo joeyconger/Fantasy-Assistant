@@ -17,6 +17,10 @@
     "ingest:odds:current": "tsx src/ingest/odds/index.ts current",
     "ingest:injuries:current": "tsx src/ingest/injuries/index.ts current",
     "ingest:weather": "tsx src/ingest/weather/index.ts",
+    "ratings:compute": "tsx src/ratings/index.ts compute",
+    "ratings:predict": "tsx src/ratings/index.ts predict",
+    "backtest:run": "tsx src/backtest/index.ts run",
+    "serve": "tsx src/server.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc"
   },

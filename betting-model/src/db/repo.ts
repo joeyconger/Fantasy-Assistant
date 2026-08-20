@@ -287,6 +287,418 @@ export interface UpsertTeamGameStatsInput {
   source: "cfbd" | "nflverse";
 }
 
+export interface TeamGameStatsRow {
+  offEpaPlay: number;
+  defEpaPlay: number;
+}
+
+export interface FinalGameWithStats {
+  gameId: number;
+  season: number;
+  week: number;
+  gameDate: Date | null;
+  homeTeamId: number;
+  awayTeamId: number;
+  homeScore: number;
+  awayScore: number;
+  homeStats: TeamGameStatsRow | null;
+  awayStats: TeamGameStatsRow | null;
+}
+
+/**
+ * Every completed game in a season, in play order, with each side's EPA/play
+ * stats (null if that team's stats row hasn't been ingested yet — callers
+ * skip those games for rating updates rather than guessing). Drives the
+ * Phase 2 rating computation, which needs to replay a season game by game.
+ */
+export async function getFinalGamesWithStatsForSeason(
+  sport: Sport,
+  season: number,
+  seasonType: "regular" | "postseason" = "regular",
+): Promise<FinalGameWithStats[]> {
+  const result = await pool.query<{
+    game_id: number;
+    season: number;
+    week: number;
+    game_date: Date | null;
+    home_team_id: number;
+    away_team_id: number;
+    home_score: number;
+    away_score: number;
+    home_off_epa_play: number | null;
+    home_def_epa_play: number | null;
+    away_off_epa_play: number | null;
+    away_def_epa_play: number | null;
+  }>(
+    `SELECT g.id AS game_id, g.season, g.week, g.game_date, g.home_team_id, g.away_team_id,
+            g.home_score, g.away_score,
+            hs.off_epa_play AS home_off_epa_play, hs.def_epa_play AS home_def_epa_play,
+            aws.off_epa_play AS away_off_epa_play, aws.def_epa_play AS away_def_epa_play
+     FROM games g
+     LEFT JOIN team_game_stats hs ON hs.game_id = g.id AND hs.team_id = g.home_team_id
+     LEFT JOIN team_game_stats aws ON aws.game_id = g.id AND aws.team_id = g.away_team_id
+     WHERE g.sport = $1 AND g.season = $2 AND g.season_type = $3 AND g.status = 'final'
+       AND g.home_score IS NOT NULL AND g.away_score IS NOT NULL
+     ORDER BY g.week ASC, g.game_date ASC NULLS LAST, g.id ASC`,
+    [sport, season, seasonType],
+  );
+  return result.rows.map((r) => ({
+    gameId: r.game_id,
+    season: r.season,
+    week: r.week,
+    gameDate: r.game_date,
+    homeTeamId: r.home_team_id,
+    awayTeamId: r.away_team_id,
+    homeScore: r.home_score,
+    awayScore: r.away_score,
+    homeStats:
+      r.home_off_epa_play === null || r.home_def_epa_play === null
+        ? null
+        : { offEpaPlay: r.home_off_epa_play, defEpaPlay: r.home_def_epa_play },
+    awayStats:
+      r.away_off_epa_play === null || r.away_def_epa_play === null
+        ? null
+        : { offEpaPlay: r.away_off_epa_play, defEpaPlay: r.away_def_epa_play },
+  }));
+}
+
+export async function getSeasonsWithFinalGames(sport: Sport): Promise<number[]> {
+  const result = await pool.query<{ season: number }>(
+    `SELECT DISTINCT season FROM games WHERE sport = $1 AND status = 'final' ORDER BY season ASC`,
+    [sport],
+  );
+  return result.rows.map((r) => r.season);
+}
+
+export interface UpsertTeamRatingInput {
+  teamId: number;
+  sport: Sport;
+  season: number;
+  throughWeek: number;
+  rating: number;
+  ratingError: number | null;
+  method: "elo" | "ridge";
+}
+
+export async function upsertTeamRating(input: UpsertTeamRatingInput): Promise<void> {
+  await pool.query(
+    `INSERT INTO team_ratings (team_id, sport, season, through_week, rating, rating_error, method, computed_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7, now())
+     ON CONFLICT (team_id, season, through_week, method)
+     DO UPDATE SET rating = EXCLUDED.rating, rating_error = EXCLUDED.rating_error, sport = EXCLUDED.sport, computed_at = now()`,
+    [input.teamId, input.sport, input.season, input.throughWeek, input.rating, input.ratingError, input.method],
+  );
+}
+
+/** A team's most recent rating from a prior season — the input to season carryover. */
+export async function getPriorSeasonFinalRating(
+  teamId: number,
+  sport: Sport,
+  priorSeason: number,
+  method: "elo" | "ridge" = "elo",
+): Promise<number | undefined> {
+  const result = await pool.query<{ rating: number }>(
+    `SELECT rating FROM team_ratings
+     WHERE team_id = $1 AND sport = $2 AND season = $3 AND method = $4
+     ORDER BY through_week DESC LIMIT 1`,
+    [teamId, sport, priorSeason, method],
+  );
+  return result.rows[0]?.rating;
+}
+
+export async function getGamesPlayedCount(teamId: number, sport: Sport, season: number, throughWeek: number): Promise<number> {
+  const result = await pool.query<{ count: string }>(
+    `SELECT count(*)::int AS count FROM games
+     WHERE sport = $1 AND season = $2 AND week <= $3 AND status = 'final'
+       AND (home_team_id = $4 OR away_team_id = $4)`,
+    [sport, season, throughWeek, teamId],
+  );
+  return Number(result.rows[0]?.count ?? 0);
+}
+
+export interface TeamRatingRow {
+  teamName: string;
+  rating: number;
+  ratingError: number | null;
+}
+
+export async function getTeamRatingsForWeek(sport: Sport, season: number, throughWeek: number): Promise<TeamRatingRow[]> {
+  const result = await pool.query<{ name: string; rating: number; rating_error: number | null }>(
+    `SELECT t.name, tr.rating, tr.rating_error
+     FROM team_ratings tr JOIN teams t ON t.id = tr.team_id
+     WHERE tr.sport = $1 AND tr.season = $2 AND tr.through_week = $3 AND tr.method = 'elo'
+     ORDER BY tr.rating DESC`,
+    [sport, season, throughWeek],
+  );
+  return result.rows.map((r) => ({ teamName: r.name, rating: r.rating, ratingError: r.rating_error }));
+}
+
+/** A team's most recent rating strictly before a given week — the input to predictSpread. Defaults to 0 (league average) if the team has no rating yet (early season / never rated). */
+export async function getTeamRatingBeforeWeek(
+  teamId: number,
+  sport: Sport,
+  season: number,
+  beforeWeek: number,
+  method: "elo" | "ridge" = "elo",
+): Promise<number> {
+  const result = await pool.query<{ rating: number }>(
+    `SELECT rating FROM team_ratings
+     WHERE team_id = $1 AND sport = $2 AND season = $3 AND through_week < $4 AND method = $5
+     ORDER BY through_week DESC LIMIT 1`,
+    [teamId, sport, season, beforeWeek, method],
+  );
+  return result.rows[0]?.rating ?? 0;
+}
+
+/** The market spread this model anchors predictions to: closing line if we have one, else the most recent snapshot. */
+export async function getMarketSpreadHome(gameId: number): Promise<number | null> {
+  const result = await pool.query<{ spread_home: number | null }>(
+    `SELECT spread_home FROM odds_snapshots
+     WHERE game_id = $1 AND spread_home IS NOT NULL
+     ORDER BY (snapshot_type = 'closing') DESC, captured_at DESC
+     LIMIT 1`,
+    [gameId],
+  );
+  return result.rows[0]?.spread_home ?? null;
+}
+
+export interface GameForWeek {
+  gameId: number;
+  homeTeamId: number;
+  awayTeamId: number;
+  homeTeamName: string;
+  awayTeamName: string;
+}
+
+export async function getGamesForWeek(sport: Sport, season: number, week: number): Promise<GameForWeek[]> {
+  const result = await pool.query<{
+    game_id: number;
+    home_team_id: number;
+    away_team_id: number;
+    home_name: string;
+    away_name: string;
+  }>(
+    `SELECT g.id AS game_id, g.home_team_id, g.away_team_id, ht.name AS home_name, at.name AS away_name
+     FROM games g
+     JOIN teams ht ON ht.id = g.home_team_id
+     JOIN teams at ON at.id = g.away_team_id
+     WHERE g.sport = $1 AND g.season = $2 AND g.week = $3
+     ORDER BY g.game_date ASC NULLS LAST, g.id ASC`,
+    [sport, season, week],
+  );
+  return result.rows.map((r) => ({
+    gameId: r.game_id,
+    homeTeamId: r.home_team_id,
+    awayTeamId: r.away_team_id,
+    homeTeamName: r.home_name,
+    awayTeamName: r.away_name,
+  }));
+}
+
+export interface InsertModelPredictionInput {
+  gameId: number;
+  method: string;
+  modelSpreadHome: number;
+  modelTotal: number | null;
+  confidence: number | null;
+  marketSpreadHome: number | null;
+}
+
+export async function insertModelPrediction(input: InsertModelPredictionInput): Promise<void> {
+  await pool.query(
+    `INSERT INTO model_predictions (game_id, method, model_spread_home, model_total, confidence, market_spread_home, predicted_at)
+     VALUES ($1,$2,$3,$4,$5,$6, now())
+     ON CONFLICT (game_id, method, predicted_at) DO NOTHING`,
+    [input.gameId, input.method, input.modelSpreadHome, input.modelTotal, input.confidence, input.marketSpreadHome],
+  );
+}
+
+export interface PredictionRow {
+  gameId: number;
+  homeTeam: string;
+  awayTeam: string;
+  modelSpreadHome: number;
+  marketSpreadHome: number | null;
+  confidence: number | null;
+}
+
+/** The latest ('elo') prediction per game for a week — DISTINCT ON game_id ordered by most recent predicted_at. */
+export async function getPredictionsForWeek(sport: Sport, season: number, week: number): Promise<PredictionRow[]> {
+  const result = await pool.query<{
+    game_id: number;
+    home: string;
+    away: string;
+    model_spread_home: number;
+    market_spread_home: number | null;
+    confidence: number | null;
+  }>(
+    `SELECT DISTINCT ON (g.id) g.id AS game_id, ht.name AS home, at.name AS away,
+            mp.model_spread_home, mp.market_spread_home, mp.confidence
+     FROM model_predictions mp
+     JOIN games g ON g.id = mp.game_id
+     JOIN teams ht ON ht.id = g.home_team_id
+     JOIN teams at ON at.id = g.away_team_id
+     WHERE g.sport = $1 AND g.season = $2 AND g.week = $3 AND mp.method = 'elo'
+     ORDER BY g.id, mp.predicted_at DESC`,
+    [sport, season, week],
+  );
+  return result.rows.map((r) => ({
+    gameId: r.game_id,
+    homeTeam: r.home,
+    awayTeam: r.away,
+    modelSpreadHome: r.model_spread_home,
+    marketSpreadHome: r.market_spread_home,
+    confidence: r.confidence,
+  }));
+}
+
+export interface FinalGameForBacktest {
+  gameId: number;
+  season: number;
+  week: number;
+  homeTeamId: number;
+  awayTeamId: number;
+  homeScore: number;
+  awayScore: number;
+  openingSpreadHome: number | null;
+  closingSpreadHome: number | null;
+}
+
+/**
+ * Every completed game in a season with its opening AND closing spread —
+ * the backtest anchors predictions to the opening line (the number that
+ * would actually have been available at bet time) and scores them against
+ * the closing line, never the other way around, so a backtest can't "know"
+ * the closing number before it existed.
+ */
+export async function getFinalGamesForBacktest(sport: Sport, season: number): Promise<FinalGameForBacktest[]> {
+  const result = await pool.query<{
+    game_id: number;
+    season: number;
+    week: number;
+    home_team_id: number;
+    away_team_id: number;
+    home_score: number;
+    away_score: number;
+    opening_spread_home: number | null;
+    closing_spread_home: number | null;
+  }>(
+    `SELECT g.id AS game_id, g.season, g.week, g.home_team_id, g.away_team_id, g.home_score, g.away_score,
+            (SELECT os.spread_home FROM odds_snapshots os
+             WHERE os.game_id = g.id AND os.snapshot_type = 'opening' AND os.spread_home IS NOT NULL
+             ORDER BY os.captured_at ASC LIMIT 1) AS opening_spread_home,
+            (SELECT os.spread_home FROM odds_snapshots os
+             WHERE os.game_id = g.id AND os.snapshot_type = 'closing' AND os.spread_home IS NOT NULL
+             ORDER BY os.captured_at DESC LIMIT 1) AS closing_spread_home
+     FROM games g
+     WHERE g.sport = $1 AND g.season = $2 AND g.status = 'final'
+       AND g.home_score IS NOT NULL AND g.away_score IS NOT NULL
+     ORDER BY g.week ASC, g.game_date ASC NULLS LAST, g.id ASC`,
+    [sport, season],
+  );
+  return result.rows.map((r) => ({
+    gameId: r.game_id,
+    season: r.season,
+    week: r.week,
+    homeTeamId: r.home_team_id,
+    awayTeamId: r.away_team_id,
+    homeScore: r.home_score,
+    awayScore: r.away_score,
+    openingSpreadHome: r.opening_spread_home,
+    closingSpreadHome: r.closing_spread_home,
+  }));
+}
+
+export interface CreateBacktestRunInput {
+  name: string;
+  method: string;
+  seasonStart: number;
+  seasonEnd: number;
+  params: Record<string, unknown>;
+}
+
+export async function createBacktestRun(input: CreateBacktestRunInput): Promise<number> {
+  const result = await pool.query<{ id: number }>(
+    `INSERT INTO backtest_runs (name, method, season_start, season_end, params)
+     VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+    [input.name, input.method, input.seasonStart, input.seasonEnd, JSON.stringify(input.params)],
+  );
+  return result.rows[0]!.id;
+}
+
+export interface InsertBacktestResultInput {
+  backtestRunId: number;
+  gameId: number;
+  modelSpreadHome: number;
+  openingSpreadHome: number | null;
+  closingSpreadHome: number;
+  actualMarginHome: number;
+  clv: number | null;
+  covered: boolean | null;
+  beatClose: boolean | null;
+}
+
+export async function insertBacktestResult(input: InsertBacktestResultInput): Promise<void> {
+  await pool.query(
+    `INSERT INTO backtest_results (
+       backtest_run_id, game_id, model_spread_home, opening_spread_home, closing_spread_home,
+       actual_margin_home, clv, covered, beat_close
+     )
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+     ON CONFLICT (backtest_run_id, game_id) DO UPDATE SET
+       model_spread_home = EXCLUDED.model_spread_home, opening_spread_home = EXCLUDED.opening_spread_home,
+       closing_spread_home = EXCLUDED.closing_spread_home, actual_margin_home = EXCLUDED.actual_margin_home,
+       clv = EXCLUDED.clv, covered = EXCLUDED.covered, beat_close = EXCLUDED.beat_close`,
+    [
+      input.backtestRunId,
+      input.gameId,
+      input.modelSpreadHome,
+      input.openingSpreadHome,
+      input.closingSpreadHome,
+      input.actualMarginHome,
+      input.clv,
+      input.covered,
+      input.beatClose,
+    ],
+  );
+}
+
+export interface BacktestRunSummary {
+  id: number;
+  name: string;
+  method: string;
+  sport: Sport | null;
+  seasonStart: number;
+  seasonEnd: number;
+  createdAt: Date;
+}
+
+export async function listBacktestRuns(): Promise<BacktestRunSummary[]> {
+  const result = await pool.query<{
+    id: number;
+    name: string;
+    method: string;
+    sport: Sport | null;
+    season_start: number;
+    season_end: number;
+    created_at: Date;
+  }>(
+    `SELECT br.id, br.name, br.method, br.season_start, br.season_end, br.created_at,
+            (br.params->>'sport') AS sport
+     FROM backtest_runs br
+     ORDER BY br.id DESC`,
+  );
+  return result.rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    method: r.method,
+    sport: r.sport,
+    seasonStart: r.season_start,
+    seasonEnd: r.season_end,
+    createdAt: r.created_at,
+  }));
+}
+
 export async function upsertTeamGameStats(input: UpsertTeamGameStatsInput): Promise<void> {
   await pool.query(
     `INSERT INTO team_game_stats (

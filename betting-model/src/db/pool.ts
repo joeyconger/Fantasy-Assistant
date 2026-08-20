@@ -1,5 +1,12 @@
-import { Pool } from "pg";
+import { Pool, types } from "pg";
 import { config } from "../config.js";
+
+// pg returns NUMERIC columns as strings by default (avoids silent precision
+// loss for values too big for a JS number). Every NUMERIC column in this
+// schema (ratings, spreads, CLV, EPA) is well within float precision and
+// gets used in arithmetic immediately, so parse it as a float at the driver
+// level instead of coercing ad hoc at every call site.
+types.setTypeParser(types.builtins.NUMERIC, (value: string) => parseFloat(value));
 
 export const pool = new Pool({
   connectionString: config.databaseUrl,
