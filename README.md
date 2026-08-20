@@ -229,7 +229,7 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-167 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
+171 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
 the private-league auth path, the players table's platform-scoped primary
 key (prevents Sleeper/ESPN ID collisions), cross-platform name matching
 (suffixes, punctuation, ambiguous-duplicate handling), the rank-inefficiency
@@ -240,9 +240,11 @@ synthetic HTML/JSON, the Apify-based Reddit client's defensive field
 extraction, lexicon-based sentiment scoring, the devy watchlist,
 roster-needs gap analysis, the trade analyzer, the design-system component
 helpers (XSS-escaping), the web dashboard (auth gating, XSS-escaping,
-missing-env-var fail-fast), and the `league_sources` DB-backed config store
+missing-env-var fail-fast), the `league_sources` DB-backed config store
 plus the web Settings page (CRUD, YAML migration, owner dropdown, form
-error handling).
+error handling), and the in-process daily sync scheduler's time math
+(`auto_sync.py`, including that it never spawns a real thread under
+pytest).
 
 What tests can't cover: whether the *real* KTC/FantasyPros pages, FFC's ADP
 API, or Apify's Reddit Scraper actor match the shapes the parsers assume.
@@ -257,7 +259,7 @@ fantasy-assistant sync-weekly-points 1389373095143284736   # this week's + recen
 fantasy-assistant sync-ktc --format dynasty --qb-mode 1qb   # or --format devy, --qb-mode superflex
 fantasy-assistant sync-fantasypros
 fantasy-assistant sync-ffc-adp --qb-mode 1qb        # or --qb-mode superflex; real ADP for the draft board
-fantasy-assistant sync-draft-data                   # sync-rankings + FFC ADP (both qb_modes) in one call — see "Auto-syncing draft data"
+fantasy-assistant sync-draft-data                   # sync-rankings + FFC ADP (both qb_modes) in one call — see "Auto-syncing draft/market data"
 fantasy-assistant sync-market-values                # KTC (dynasty+devy, both qb_modes) + FantasyPros in one call — feeds buy-sell/devy
 fantasy-assistant sync-reddit       # needs APIFY_API_TOKEN; see "Reddit sentiment via Apify" for subreddit/flair defaults
 
@@ -439,15 +441,13 @@ redo it, or want to point a fresh Railway project at this repo.
 3. **Variables**: `DASHBOARD_USER`, `DASHBOARD_PASSWORD`, `DATABASE_PATH=/data/fantasy_assistant.db`,
    `ESPN_SWID`, `ESPN_S2`, and (once you set it up) `APIFY_API_TOKEN`.
 4. **Networking → Generate Domain**.
-5. **Auto-sync cron service** (optional but recommended — see "Auto-syncing
-   draft data" below): in the same project, **+ New → GitHub Repo** → same
-   repo/branch again, to add a second service. On that new service: **Settings
-   → Config-as-code path** → set to `railway.cron.json` (instead of the
-   default `railway.json`, so it gets the cron start command instead of the
-   web server's). Attach the **same Volume** at the same `/data` mount path,
-   and set the same `DATABASE_PATH`, `ESPN_SWID`, `ESPN_S2` variables (skip
-   `DASHBOARD_USER`/`DASHBOARD_PASSWORD` — the CLI doesn't need them). No
-   domain needed for this service.
+
+That's the whole deploy — draft/market data auto-syncs daily from inside
+this same service (see "Auto-syncing draft/market data" below). There's no
+second service to set up: an earlier version of this app tried a separate
+Railway cron service for that, which turned out to be broken by a real
+Railway constraint (a Volume can only mount to one service at a time — see
+that section for the full story) and was replaced.
 
 Web dashboard pages: `/` (priorities + standings + Sync Now), `/settings`
 (add/edit/remove leagues — see "Settings" below), then
@@ -512,30 +512,24 @@ changes is a cheap no-op, not a wasted call. (Reddit sentiment, via
 against a metered Apify budget and sits in a ToS gray area, see "Reddit
 sentiment via Apify" below, so it stays a manual, conscious action.)
 
-**On Railway**, both run automatically via a second cron service pointed
-at `railway.cron.json` (see step 5 of "Deploy to Railway" above) — a
-[Railway Cron Schedule](https://docs.railway.com/reference/cron-jobs), not
-a job inside the web process, so it runs independently of whether the
-dashboard itself is under load. The cron's `startCommand` chains both
-(`sync-draft-data && sync-market-values`) so one daily run covers draft
-board, buy-sell, and devy. Default schedule is `0 13 * * *` (13:00 UTC,
-once daily) — edit `railway.cron.json`'s `cronSchedule` field (5-field cron
-syntax, UTC) if you want a different time or cadence; the minimum Railway
-allows is once every 5 minutes, though daily is plenty for data that shifts
-gradually rather than minute-to-minute.
+**On Railway, this runs in-process** — a background thread inside the web
+service itself (`auto_sync.py`), started from FastAPI's `lifespan` handler
+in `web.py`, that wakes up once a day (13:00 UTC by default — change
+`SYNC_HOUR_UTC` in `auto_sync.py` for a different time) and runs both
+commands directly against the app's own DB connection.
 
-**Set `PYTHONUNBUFFERED=1`** on the cron service's variables — without it,
-Python buffers stdout when it's not attached to a terminal, so Deploy Logs
-show nothing until the whole run exits instead of streaming progress live,
-which makes a genuine hang indistinguishable from normal execution.
-
-**The cron service needs its own copy of every variable the sync commands
-touch** — it's a separate service from the web dashboard, so nothing is
-shared automatically: `DATABASE_PATH` (must be the *exact* same value as
-the web service's, e.g. both `/data/fantasy_assistant.db` — same Volume
-attached ≠ same file if the path string differs) and `ESPN_SWID`/`ESPN_S2`
-if you have an ESPN league. Skip `DASHBOARD_USER`/`DASHBOARD_PASSWORD` — the
-CLI doesn't need them.
+**Why not a separate Railway cron service** (which is what this looked
+like at first): Railway Volumes can only be mounted to **one service at a
+time**. A second service running the sync commands against what was
+supposed to be "the same" Volume actually just detached it from the web
+service — the web dashboard silently fell back to a non-persistent path
+inside its own container, while the cron service kept the real data. Every
+symptom (draft board empty despite the cron reporting real synced counts,
+leagues syncing fine because that data was written and read within the
+same container's lifetime) traced back to this. Running the sync
+in-process instead means there's only ever one service and one database
+connection path — nothing to keep in sync across services, because there's
+only one service.
 
 **Locally**, there's no scheduler — just run `fantasy-assistant
 sync-draft-data`/`sync-market-values` (or `--force` to bypass the caches)
@@ -574,8 +568,7 @@ whenever you want fresh data, same as any other sync command.
 ## Project layout
 
 ```
-railway.json                 # Railway build/start command config (web service)
-railway.cron.json            # Railway config for the daily draft-data sync cron service
+railway.json                 # Railway build/start command config
 .env.example                  # env vars the web dashboard/CLI can use
 config/
   leagues.yaml               # one-time migration input only, see league_sources.py
@@ -583,6 +576,7 @@ config/
 src/fantasy_assistant/
   cli.py                      # all CLI commands
   web.py                       # FastAPI dashboard (incl. /settings)
+  auto_sync.py                  # in-process daily background sync (see "Auto-syncing draft/market data")
   web_components.py            # design system: CSS tokens + HTML component helpers
   devy.py                       # devy watchlist CRUD
   config.py                   # config/leagues.yaml + secrets.yaml/env loading (migration-only now)

@@ -18,12 +18,14 @@ import html
 import os
 import secrets as secrets_module
 
+from contextlib import asynccontextmanager
 from urllib.parse import quote, unquote
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Query, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
+from . import auto_sync
 from . import db as db_module
 from . import devy as devy_module
 from . import league_sources
@@ -48,7 +50,13 @@ if not DASHBOARD_USER or not DASHBOARD_PASSWORD:
         "will start — it would otherwise be exposed with no login to whoever finds the URL."
     )
 
-app = FastAPI(title="Fantasy Assistant")
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    auto_sync.start()
+    yield
+
+
+app = FastAPI(title="Fantasy Assistant", lifespan=_lifespan)
 security = HTTPBasic()
 
 

@@ -324,17 +324,11 @@ def sync_fantasypros_cmd(force: bool):
     click.echo(f"Synced {count} FantasyPros rankings." if count else "FantasyPros cache fresh (<12h) — skipped. Use --force.")
 
 
-@cli.command("sync-market-values")
-@click.option("--force", is_flag=True, help="Bypass each source's cache and refresh even if recently synced.")
-def sync_market_values_cmd(force: bool):
+def _sync_market_data(conn, force: bool = False) -> None:
     """Refresh everything the buy-sell/devy pages depend on: KTC dynasty+devy trade
     values (both qb_modes, since different leagues use different modes) plus
-    FantasyPros redraft consensus rankings. Meant to run alongside sync-draft-data
-    on a schedule (see railway.cron.json) so buy-sell/devy stay current without
-    manual sync-ktc/sync-fantasypros calls."""
-    conn = db_module.get_connection()
-    db_module.init_db(conn)
-
+    FantasyPros redraft consensus rankings. Shared by sync-market-values and the
+    web app's daily background sync so both stay in sync."""
     ktc_client = KTCClient()
     for format_ in ("dynasty", "devy"):
         for qb_mode in ("1qb", "superflex"):
@@ -358,6 +352,17 @@ def sync_market_values_cmd(force: bool):
         click.echo(f"FantasyPros: failed — couldn't reach FantasyPros: {exc}")
     except FantasyProsParseError as exc:
         click.echo(f"FantasyPros: failed — {exc}")
+
+
+@cli.command("sync-market-values")
+@click.option("--force", is_flag=True, help="Bypass each source's cache and refresh even if recently synced.")
+def sync_market_values_cmd(force: bool):
+    """Refresh everything the buy-sell/devy pages depend on: KTC dynasty+devy trade
+    values (both qb_modes) plus FantasyPros redraft consensus rankings. See also the
+    web app's daily background sync, which runs this automatically."""
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+    _sync_market_data(conn, force=force)
 
 
 @cli.command("sync-ffc-adp")
