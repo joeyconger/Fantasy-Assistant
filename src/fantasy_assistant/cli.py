@@ -323,6 +323,42 @@ def sync_fantasypros_cmd(force: bool):
     click.echo(f"Synced {count} FantasyPros rankings." if count else "FantasyPros cache fresh (<12h) — skipped. Use --force.")
 
 
+@cli.command("sync-market-values")
+@click.option("--force", is_flag=True, help="Bypass each source's cache and refresh even if recently synced.")
+def sync_market_values_cmd(force: bool):
+    """Refresh everything the buy-sell/devy pages depend on: KTC dynasty+devy trade
+    values (both qb_modes, since different leagues use different modes) plus
+    FantasyPros redraft consensus rankings. Meant to run alongside sync-draft-data
+    on a schedule (see railway.cron.json) so buy-sell/devy stay current without
+    manual sync-ktc/sync-fantasypros calls."""
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+
+    ktc_client = KTCClient()
+    for format_ in ("dynasty", "devy"):
+        for qb_mode in ("1qb", "superflex"):
+            try:
+                count = ktc_sync_values(conn, ktc_client, format_, qb_mode=qb_mode, force=force)
+                click.echo(
+                    f"KTC ({format_}/{qb_mode}): synced {count} values"
+                    if count
+                    else f"KTC ({format_}/{qb_mode}): cache fresh (<12h) — skipped."
+                )
+            except KTCFetchError as exc:
+                click.echo(f"KTC ({format_}/{qb_mode}): failed — couldn't reach KTC: {exc}")
+            except KTCParseError as exc:
+                click.echo(f"KTC ({format_}/{qb_mode}): failed — {exc}")
+
+    fp_client = FantasyProsClient()
+    try:
+        count = fantasypros_sync_rankings(conn, fp_client, force=force)
+        click.echo(f"FantasyPros: synced {count} rankings" if count else "FantasyPros: cache fresh (<12h) — skipped.")
+    except FantasyProsFetchError as exc:
+        click.echo(f"FantasyPros: failed — couldn't reach FantasyPros: {exc}")
+    except FantasyProsParseError as exc:
+        click.echo(f"FantasyPros: failed — {exc}")
+
+
 @cli.command("sync-ffc-adp")
 @click.option("--qb-mode", type=click.Choice(["1qb", "superflex"]), default="1qb")
 @click.option("--teams", default=12, help="League size FFC's ADP is drawn from.")

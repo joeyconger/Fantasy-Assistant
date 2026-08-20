@@ -258,6 +258,7 @@ fantasy-assistant sync-ktc --format dynasty --qb-mode 1qb   # or --format devy, 
 fantasy-assistant sync-fantasypros
 fantasy-assistant sync-ffc-adp --qb-mode 1qb        # or --qb-mode superflex; real ADP for the draft board
 fantasy-assistant sync-draft-data                   # sync-rankings + FFC ADP (both qb_modes) in one call — see "Auto-syncing draft data"
+fantasy-assistant sync-market-values                # KTC (dynasty+devy, both qb_modes) + FantasyPros in one call — feeds buy-sell/devy
 fantasy-assistant sync-reddit       # needs APIFY_API_TOKEN; see "Reddit sentiment via Apify" for subreddit/flair defaults
 
 fantasy-assistant list-leagues                                    # leagues currently configured to sync
@@ -490,30 +491,55 @@ ESPN cookies (`ESPN_SWID`/`ESPN_S2`) still come from env vars/
 `config/secrets.yaml` only, never the DB — that credential boundary is
 unchanged.
 
-## Auto-syncing draft data
+## Auto-syncing draft/market data
 
-`fantasy-assistant sync-draft-data` refreshes everything the draft board
-depends on in one call: Sleeper `search_rank` + ESPN's full player pool
-(`_sync_rank_data`, the same logic `sync-rankings` uses) plus FFC ADP for
-**both** qb_modes (1qb and superflex — different leagues use different
-modes, so both need refreshing regardless of which league you check the
-draft board from). Each underlying sync still respects its own cache (12h
-for FFC/ESPN rankings), so running it more often than data actually changes
-is a cheap no-op, not a wasted call.
+Two commands cover everything that used to require manual sync calls:
 
-**On Railway**, this runs automatically via a second cron service pointed
+- **`fantasy-assistant sync-draft-data`** — everything the draft board
+  depends on: Sleeper `search_rank` + ESPN's full player pool
+  (`_sync_rank_data`, the same logic `sync-rankings` uses) plus FFC ADP for
+  **both** qb_modes (1qb and superflex — different leagues use different
+  modes, so both need refreshing regardless of which league you check the
+  draft board from).
+- **`fantasy-assistant sync-market-values`** — everything buy-sell/devy
+  depend on: KTC dynasty+devy trade values (again, both qb_modes) plus
+  FantasyPros redraft consensus rankings.
+
+Each underlying sync still respects its own cache (12h for FFC/ESPN/KTC/
+FantasyPros), so running either command more often than data actually
+changes is a cheap no-op, not a wasted call. (Reddit sentiment, via
+`sync-reddit`, is deliberately **not** included in either — it costs
+against a metered Apify budget and sits in a ToS gray area, see "Reddit
+sentiment via Apify" below, so it stays a manual, conscious action.)
+
+**On Railway**, both run automatically via a second cron service pointed
 at `railway.cron.json` (see step 5 of "Deploy to Railway" above) — a
 [Railway Cron Schedule](https://docs.railway.com/reference/cron-jobs), not
 a job inside the web process, so it runs independently of whether the
-dashboard itself is under load. Default schedule is `0 13 * * *` (13:00
-UTC, once daily) — edit `railway.cron.json`'s `cronSchedule` field (5-field
-cron syntax, UTC) if you want a different time or cadence; the minimum
-Railway allows is once every 5 minutes, though daily is plenty for
-ADP/rankings, which shift gradually rather than minute-to-minute.
+dashboard itself is under load. The cron's `startCommand` chains both
+(`sync-draft-data && sync-market-values`) so one daily run covers draft
+board, buy-sell, and devy. Default schedule is `0 13 * * *` (13:00 UTC,
+once daily) — edit `railway.cron.json`'s `cronSchedule` field (5-field cron
+syntax, UTC) if you want a different time or cadence; the minimum Railway
+allows is once every 5 minutes, though daily is plenty for data that shifts
+gradually rather than minute-to-minute.
+
+**Set `PYTHONUNBUFFERED=1`** on the cron service's variables — without it,
+Python buffers stdout when it's not attached to a terminal, so Deploy Logs
+show nothing until the whole run exits instead of streaming progress live,
+which makes a genuine hang indistinguishable from normal execution.
+
+**The cron service needs its own copy of every variable the sync commands
+touch** — it's a separate service from the web dashboard, so nothing is
+shared automatically: `DATABASE_PATH` (must be the *exact* same value as
+the web service's, e.g. both `/data/fantasy_assistant.db` — same Volume
+attached ≠ same file if the path string differs) and `ESPN_SWID`/`ESPN_S2`
+if you have an ESPN league. Skip `DASHBOARD_USER`/`DASHBOARD_PASSWORD` — the
+CLI doesn't need them.
 
 **Locally**, there's no scheduler — just run `fantasy-assistant
-sync-draft-data` (or `--force` to bypass the caches) whenever you want fresh
-data, same as any other sync command.
+sync-draft-data`/`sync-market-values` (or `--force` to bypass the caches)
+whenever you want fresh data, same as any other sync command.
 
 ## Data model notes
 
