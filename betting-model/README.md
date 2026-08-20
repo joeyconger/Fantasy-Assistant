@@ -18,6 +18,7 @@ built to measure against the closing line, not the final score.
 | 1. Data layer — public/sharp betting splits | 🚫 Schema-only — no verified free data source found (see "New scaffolds" below) |
 | 2. Rating model | ✅ Built (EPA-driven Elo, market-anchored) — math sanity-checked. Fixed a real bug (unbounded SOS multiplier causing rating blowups, see "A real bug" below) |
 | 2. Rating model — external ratings (CFB) | ⚠️ Built and calibrated via sweep (spPriorWeight=0, eloSignalPoints=1.5 — SP+ prior hurt, weekly Elo signal helped), ingested data still **UNVERIFIED** against a real response — see "External ratings" below |
+| 2. Rating model — SP+ signal + success-rate blend | 🆕 Built (`spSignalPoints`, `successRateWeight`/`pointsPerSuccessRate`), unit- and integration-tested, both default to 0 (no-op) — **NOT yet swept against real data**, see "SP+ signal" / "Success rate blend" below |
 | 3. Backtest harness | ✅ **Run for real** against 2023-2025, both sports, plus walk-forward validation and segment breakdowns. Three real bugs found and fixed (numeric-string coercion; unbounded SOS multiplier; computeInitialRating ignoring its own weight). **No cover-rate edge survived out-of-sample testing** — see "Backtest results" below. Avg CLV stayed positive in the true holdout; segment breakdowns are the current search for a narrower edge |
 | 4. Weekly picks output | 🚫 **Gated — do not build until Phase 3 backtest results are reviewed together** |
 
@@ -363,9 +364,76 @@ informed number where one exists (`src/ingest/cfbd/syncExternalRatings.ts`,
   generous week range (0-20) and treats empty results as "not available,"
   not an error.
 
-Both `spPriorWeight` (0.5) and `eloSignalPoints` (1.5) are uncalibrated
+Both `spPriorWeight` (0) and `eloSignalPoints` (1.5) are uncalibrated
 defaults, same as everything else in `config.ts` — 0 for NFL, since neither
 source covers it.
+
+### SP+ signal — a second, different way to use it (`spSignalPoints`)
+
+The `spPriorWeight` sweep found blending SP+ into the one-time initial
+carryover rating consistently HURT cover rate once weighted above ~0.3 —
+the leading suspect (see above) is the preseason-vs-final timing ambiguity
+in what CFBD's `/ratings/sp` value actually represents. Rather than
+conclude "SP+ doesn't help" from that one finding, `spSignalPoints`
+(`ratings/config.ts`, defaults to 0 — a no-op) applies the exact same
+additive, every-week treatment `eloSignalPoints` already gets — z-score
+the prior season's SP+ against the full FBS distribution
+(`getCfbdSpDistributionForSeason`), add
+`spSignalPoints * (homeSpZ - awaySpZ)` directly into `predictSpread`'s
+margin every week, constant across the season since SP+ itself has no
+in-season granularity (unlike CFBD's weekly Elo). This is a genuinely
+different mechanism from `spPriorWeight`, not the same idea reworded — the
+carryover-blend version overwrites part of the model's own initial
+estimate once and then lets `computeSeasonRatings` erode that influence
+game by game; the signal version keeps contributing the same fixed nudge
+to every single prediction all season, the same way `eloSignalPoints`
+does. Given `eloSignalPoints` (additive) had "a genuine, fairly clean
+positive effect" while `spPriorWeight` (carryover-blend) hurt, the
+*mechanism* looks like it might matter more than the *source* — this is
+the natural test of that hypothesis. Sweep via `backtest sweep`'s
+`cfb-spsignal-sweep` job (`src/backtest/sweep.ts`'s `runSpSignalSweep`) —
+**not yet run against real data**, so this is a hypothesis with reasoning
+behind it, not a validated improvement.
+
+### Success rate blend — caring less about the result, more about how the game went (`successRateWeight`)
+
+`computeSeasonRatings` has only ever used EPA/points-per-play as its
+"ground truth" performance signal per game (`pointsPerEpa * (netEpa
+differential)`). EPA is itself already closer to "the process" than a raw
+score margin — it values every play by its expected-points impact rather
+than just counting final points — but it's still dominated by a handful of
+explosive or garbage-time plays, the same failure mode that makes raw
+score margins noisy. Bill Connelly's own SP+ methodology treats this as
+two genuinely separate signals worth their own weights, not one number:
+*efficiency* (success rate — did this play gain enough yards to keep the
+drive on schedule, regardless of how many yards it was worth) at 25%, and
+*explosiveness* (points-per-play, EPA's own lineage) at 35%, plus field
+position (15%), finishing drives (15%), and turnover margin (10%).
+[Sources: Football Study Hall's advanced-stats
+glossary](https://www.footballstudyhall.com/2018/2/2/16963820/college-football-advanced-stats-glossary),
+[BetChicago's CFB advanced-stats
+glossary](https://www.betchicago.com/college-football-betting-advanced-stats-glossary-metrics).
+
+`team_game_stats.off_success_rate`/`def_success_rate` have been ingested
+from CFBD's advanced-stats endpoint since Phase 1 — and were completely
+unused by the rating engine until now (`getSeasonGamesForRating` never
+selected them). `successRateWeight` (0-1, default 0 — a no-op, identical
+to today's pure-EPA behavior) and `pointsPerSuccessRate` (an unswept
+placeholder scale constant) blend a success-rate-differential margin
+alongside the existing EPA-differential margin in
+`computeSeasonRatings` — see `ratings/elo.ts`'s doc comments on both
+params for the exact formula. Falls back to pure EPA for any game missing
+success-rate data rather than guessing. Sweep via `cfb-successrate-sweep`
+(`runSuccessRateSweep`, sweeps `successRateWeight` × `pointsPerSuccessRate`
+together) — **not yet run against real data**.
+
+Both of these were added, tested (unit tests proving they're genuinely
+inert at their 0 defaults, and genuinely wired end-to-end through
+`getSeasonGamesForRating`/`getCfbdSpDistributionForSeason`/`service.ts`
+into a real predicted spread — not just the pure-math layer), and left
+here as calibration-ready hypotheses. Neither has been run against
+production data; treat the reasoning above as a reason to *try* them, not
+a claim that they work.
 
 ## Phase 3: the backtest harness
 

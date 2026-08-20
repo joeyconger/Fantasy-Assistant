@@ -374,6 +374,11 @@ export interface GameForRating {
   homeDefEpa: number;
   awayOffEpa: number;
   awayDefEpa: number;
+  /** Success rate alongside EPA — see ratings/elo.ts's GameForRating doc. Nullable: not required for a game to be included (only EPA is), so ratings/elo.ts's successRateWeight blend falls back to pure EPA when any of these four is missing. */
+  homeOffSuccess: number | null;
+  homeDefSuccess: number | null;
+  awayOffSuccess: number | null;
+  awayDefSuccess: number | null;
 }
 
 /** Completed games with both teams' EPA/play stats present — what the rating engine consumes. */
@@ -391,10 +396,16 @@ export async function getSeasonGamesForRating(
     home_def_epa: number;
     away_off_epa: number;
     away_def_epa: number;
+    home_off_success: number | null;
+    home_def_success: number | null;
+    away_off_success: number | null;
+    away_def_success: number | null;
   }>(
     `SELECT g.id AS game_id, g.week, g.home_team_id, g.away_team_id,
             home_stats.off_epa_play AS home_off_epa, home_stats.def_epa_play AS home_def_epa,
-            away_stats.off_epa_play AS away_off_epa, away_stats.def_epa_play AS away_def_epa
+            away_stats.off_epa_play AS away_off_epa, away_stats.def_epa_play AS away_def_epa,
+            home_stats.off_success_rate AS home_off_success, home_stats.def_success_rate AS home_def_success,
+            away_stats.off_success_rate AS away_off_success, away_stats.def_success_rate AS away_def_success
      FROM games g
      JOIN team_game_stats home_stats ON home_stats.game_id = g.id AND home_stats.team_id = g.home_team_id
      JOIN team_game_stats away_stats ON away_stats.game_id = g.id AND away_stats.team_id = g.away_team_id
@@ -413,6 +424,10 @@ export async function getSeasonGamesForRating(
     homeDefEpa: r.home_def_epa,
     awayOffEpa: r.away_off_epa,
     awayDefEpa: r.away_def_epa,
+    homeOffSuccess: r.home_off_success,
+    homeDefSuccess: r.home_def_success,
+    awayOffSuccess: r.away_off_success,
+    awayDefSuccess: r.away_def_success,
   }));
 }
 
@@ -468,6 +483,26 @@ export async function getPriorSeasonSpRating(teamId: number, priorSeason: number
     [teamId, priorSeason],
   );
   return result.rows[0]?.rating;
+}
+
+/**
+ * Every team's CFBD SP+ (overall) for a given season — the population a
+ * single team's z-score is computed against for RatingParams.spSignalPoints
+ * (see ratings/elo.ts's predictSpread doc). SP+ has no week granularity
+ * (see ingest/cfbd/client.ts's getSpRatings doc), so unlike
+ * getCfbdEloDistributionForWeek this is one distribution per season, not
+ * per week — callers pass the PRIOR season (the only "safe use" this
+ * project has found for SP+, see getPriorSeasonSpRating's doc).
+ */
+export async function getCfbdSpDistributionForSeason(sport: Sport, season: number): Promise<Map<number, number>> {
+  const result = await pool.query<{ team_id: number; rating: number }>(
+    `SELECT er.team_id, er.rating
+     FROM external_ratings er
+     JOIN teams t ON t.id = er.team_id
+     WHERE t.sport = $1 AND er.season = $2 AND er.week IS NULL AND er.source = 'cfbd_sp'`,
+    [sport, season],
+  );
+  return new Map(result.rows.map((r) => [r.team_id, r.rating]));
 }
 
 /** Every team's CFBD Elo as of a given week — the population a single team's z-score is computed against. */

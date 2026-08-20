@@ -74,6 +74,31 @@ test("predictSpread's eloSignal term actually moves the prediction (CFB only -- 
   assert.ok(Math.abs(result.eloSpreadHome - -expectedMargin) < 1e-9);
 });
 
+test("predictSpread's spSignal term actually moves the prediction when spSignalPoints > 0", () => {
+  // CFB_PARAMS.spSignalPoints defaults to 0 (untested, see config.ts) -- use
+  // an explicit override so this test doesn't silently pass as a no-op if
+  // that default ever changes, and so it actually proves the wiring works.
+  const params = { ...CFB, spSignalPoints: 2 };
+  const result = predictSpread(
+    { homeRating: 0, awayRating: 0, homeGamesPlayed: 0, awayGamesPlayed: 0, marketSpreadHome: null, homeSpZ: 1, awaySpZ: -1 },
+    params,
+  );
+  const expectedMargin = CFB.homeFieldAdvantage + 2 * 2;
+  assert.ok(Math.abs(result.eloSpreadHome - -expectedMargin) < 1e-9);
+});
+
+test("predictSpread ignores spZ inputs entirely when spSignalPoints is 0 (today's default)", () => {
+  const withSpZ = predictSpread(
+    { homeRating: 3, awayRating: 1, homeGamesPlayed: 4, awayGamesPlayed: 4, marketSpreadHome: null, homeSpZ: 5, awaySpZ: -5 },
+    CFB,
+  );
+  const withoutSpZ = predictSpread(
+    { homeRating: 3, awayRating: 1, homeGamesPlayed: 4, awayGamesPlayed: 4, marketSpreadHome: null },
+    CFB,
+  );
+  assert.equal(withSpZ.eloSpreadHome, withoutSpZ.eloSpreadHome);
+});
+
 test("computeSeasonRatings updates both teams from a single game's EPA differential", () => {
   const state = computeSeasonRatings(
     [
@@ -100,6 +125,71 @@ test("computeSeasonRatings updates both teams from a single game's EPA different
   assert.ok(Math.abs(away.rating - -expectedDelta) < 1e-9);
   assert.equal(home.gamesPlayed, 1);
   assert.equal(away.gamesPlayed, 1);
+});
+
+test("computeSeasonRatings ignores success rate entirely when successRateWeight is 0 (today's default)", () => {
+  const gameBase = {
+    gameId: 1,
+    week: 1,
+    homeTeamId: 1,
+    awayTeamId: 2,
+    homeOffEpa: 0.1,
+    homeDefEpa: -0.05,
+    awayOffEpa: -0.05,
+    awayDefEpa: 0.05,
+  };
+  const withoutSuccess = computeSeasonRatings([gameBase], new Map(), NFL);
+  const withSuccessButZeroWeight = computeSeasonRatings(
+    [{ ...gameBase, homeOffSuccess: 0.9, homeDefSuccess: 0.1, awayOffSuccess: 0.1, awayDefSuccess: 0.9 }],
+    new Map(),
+    NFL,
+  );
+  assert.equal(withoutSuccess.get(1)!.rating, withSuccessButZeroWeight.get(1)!.rating);
+});
+
+test("computeSeasonRatings actually blends in success rate when successRateWeight > 0", () => {
+  const params = { ...NFL, successRateWeight: 0.5, pointsPerSuccessRate: 90 };
+  const game = {
+    gameId: 1,
+    week: 1,
+    homeTeamId: 1,
+    awayTeamId: 2,
+    homeOffEpa: 0.1,
+    homeDefEpa: -0.05,
+    awayOffEpa: -0.05,
+    awayDefEpa: 0.05,
+    homeOffSuccess: 0.6,
+    homeDefSuccess: 0.3,
+    awayOffSuccess: 0.3,
+    awayDefSuccess: 0.6,
+  };
+  const withWeight = computeSeasonRatings([game], new Map(), params);
+  const withoutWeight = computeSeasonRatings([game], new Map(), { ...params, successRateWeight: 0 });
+  assert.notEqual(withWeight.get(1)!.rating, withoutWeight.get(1)!.rating);
+
+  // Hand-computed: epaMargin = 35*(0.15 - -0.1) = 8.75; successMargin = 90*(0.3 - -0.3) = 54
+  // actualMargin = 0.5*8.75 + 0.5*54 = 31.375; predictedMargin = 0+1.5=1.5; error=29.875
+  // both ratings start at 0 -> both SOS multipliers are 1.
+  const expectedDelta = params.baseK * 29.875;
+  assert.ok(Math.abs(withWeight.get(1)!.rating - expectedDelta) < 1e-9);
+});
+
+test("computeSeasonRatings falls back to pure EPA for a game missing success rate, even with successRateWeight > 0", () => {
+  const params = { ...NFL, successRateWeight: 0.5 };
+  const gameMissingSuccess = {
+    gameId: 1,
+    week: 1,
+    homeTeamId: 1,
+    awayTeamId: 2,
+    homeOffEpa: 0.1,
+    homeDefEpa: -0.05,
+    awayOffEpa: -0.05,
+    awayDefEpa: 0.05,
+    homeOffSuccess: null,
+  };
+  const withMissingData = computeSeasonRatings([gameMissingSuccess], new Map(), params);
+  const pureEpa = computeSeasonRatings([gameMissingSuccess], new Map(), { ...params, successRateWeight: 0 });
+  assert.equal(withMissingData.get(1)!.rating, pureEpa.get(1)!.rating);
 });
 
 test("computeSeasonRatings clamps the SOS multiplier instead of letting an extreme opponent rating blow it up", () => {
