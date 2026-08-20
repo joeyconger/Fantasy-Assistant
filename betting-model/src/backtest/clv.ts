@@ -1,39 +1,65 @@
-// Pure scoring functions for one backtested game. Kept separate from the DB
-// orchestration in run.ts so they're directly unit-testable with hand-picked
-// numbers — this is the part that actually decides whether a pick "won."
-//
-// Convention throughout: a spread is home-relative, negative = home favored
-// (matches odds_snapshots.spread_home). pickSide is determined against the
-// OPENING line — the number that would actually have been available to bet
-// — never the closing line, which isn't known until after the fact.
+export interface ClvInput {
+  /** The model's own line, anchored to the opening line (see ratings/service.ts's generateBacktestPredictionsForWeek). */
+  modelSpreadHome: number;
+  openingSpreadHome: number;
+  closingSpreadHome: number;
+}
 
-export type PickSide = "home" | "away";
+export interface ClvResult {
+  /** Which side the model's deviation from the opening line favored. */
+  pickSide: "home" | "away";
+  /** abs(opening - model) — the deviation-from-market quantity the threshold sweep filters on. */
+  edgePoints: number;
+  /**
+   * CLV in points, signed positive = good: betting the model's side at the
+   * opening line and having the closing line move further in that side's
+   * favor. This is the actual measure of "did the model's deviation from
+   * market have signal," independent of whether the bet would have won.
+   */
+  clv: number;
+}
 
-export function determinePickSide(modelSpreadHome: number, openingSpreadHome: number): PickSide | null {
-  if (modelSpreadHome === openingSpreadHome) return null;
-  return modelSpreadHome < openingSpreadHome ? "home" : "away";
+export function computeClv(input: ClvInput): ClvResult {
+  const deviation = input.openingSpreadHome - input.modelSpreadHome;
+  const pickSide: "home" | "away" = deviation >= 0 ? "home" : "away";
+  const edgePoints = Math.abs(deviation);
+  const lineMovement = input.openingSpreadHome - input.closingSpreadHome;
+  const clv = pickSide === "home" ? lineMovement : -lineMovement;
+  return { pickSide, edgePoints, clv };
+}
+
+export interface PickResult {
+  pickSide: "home" | "away";
+  edgePoints: number;
 }
 
 /**
- * Did the picked side cover a given spread? null on an exact push. This is
- * deliberately generic over which spread you pass in — call it once with
- * the closing line (a diagnostic: "would the model's disagreement with the
- * market have looked right in hindsight against the number that closed")
- * and once with the opening line (the real "did this bet win" answer).
+ * Picks a side from the model's deviation against whatever market
+ * reference is available — the opening line when there is one, the
+ * closing line otherwise (nflverse's historical data only has closing;
+ * see README "Odds data"). True CLV can't be computed without an opening
+ * price, so this only decides direction/edge size; the caller still needs
+ * computeClv (and a real opening line) for an actual CLV number.
  */
-export function computeCovered(pickSide: PickSide, spreadHome: number, actualMarginHome: number): boolean | null {
-  const margin = actualMarginHome + spreadHome;
-  if (margin === 0) return null;
-  return pickSide === "home" ? margin > 0 : margin < 0;
+export function pickSideFromDeviation(modelSpreadHome: number, referenceSpreadHome: number): PickResult {
+  const deviation = referenceSpreadHome - modelSpreadHome;
+  const pickSide: "home" | "away" = deviation >= 0 ? "home" : "away";
+  return { pickSide, edgePoints: Math.abs(deviation) };
 }
 
 /**
- * Closing Line Value: the pure price-movement metric, independent of the
- * game's outcome. Positive means the number moved in the picked side's
- * favor between opening and closing — i.e. a bettor who got the opening
- * price beat the closing price, which is the standard signal that a bet
- * was sharp regardless of whether it ultimately won.
+ * Whether the picked side would have covered the CLOSING line given the
+ * actual result — a separate question from CLV (which only asks whether
+ * the line number moved the model's way, not whether the bet won). Returns
+ * null on an exact push.
  */
-export function computeClv(pickSide: PickSide, openingSpreadHome: number, closingSpreadHome: number): number {
-  return pickSide === "home" ? openingSpreadHome - closingSpreadHome : closingSpreadHome - openingSpreadHome;
+export function computeCovered(
+  pickSide: "home" | "away",
+  actualMarginHome: number,
+  closingSpreadHome: number,
+): boolean | null {
+  const homeCoverMargin = actualMarginHome + closingSpreadHome;
+  if (homeCoverMargin === 0) return null;
+  const homeCovered = homeCoverMargin > 0;
+  return pickSide === "home" ? homeCovered : !homeCovered;
 }

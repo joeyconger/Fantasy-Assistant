@@ -2,58 +2,65 @@ import { escapeHtml } from "./layout.js";
 
 export interface CoverRateBar {
   label: string;
-  coverRate: number | null; // 0-1, null renders as n/a
+  coverRate: number | null;
   games: number;
 }
 
-const CHART_HEIGHT = 160;
-const BAR_TOP = 12;
-const BAR_BOTTOM = 128;
-const BASELINE_Y = BAR_BOTTOM - (BAR_BOTTOM - BAR_TOP) * 0.5; // 50% reference line
-
 /**
- * A row of thin vertical bars showing cover rate against the 50% baseline
- * (the breakeven line after vig — a bar poking above it is the visual
- * "is this doing anything" signal). Per the dataviz mark spec: thin marks,
- * rounded data-ends, a dashed baseline, and selective direct labels
- * (always shown here since bar count stays small).
+ * Single-series bar chart, cover rate (0-1) against a 50% baseline —
+ * built as inline SVG per this project's "no heavy framework" rule (no
+ * charting library dependency). One series, so no legend is needed per
+ * the dataviz skill's rules; a native <title> element gives each bar a
+ * real hover tooltip without any JS.
  */
-export function coverRateBarChart(bars: CoverRateBar[]): string {
-  const width = Math.max(320, bars.length * 90);
-  const barWidth = Math.min(46, (width - 24) / bars.length - 16);
-  const step = (width - 24) / bars.length;
+export function renderCoverRateChart(bars: CoverRateBar[], baseline = 0.5): string {
+  const width = 640;
+  const height = 200;
+  const paddingLeft = 8;
+  const paddingRight = 8;
+  const paddingTop = 20;
+  const paddingBottom = 28;
+  const plotWidth = width - paddingLeft - paddingRight;
+  const plotHeight = height - paddingTop - paddingBottom;
+  const gap = 10;
+  const maxBarWidth = 90;
+  const barWidth = Math.min(maxBarWidth, (plotWidth - gap * (bars.length - 1)) / bars.length);
+  const groupWidth = bars.length * barWidth + (bars.length - 1) * gap;
+  const groupLeft = paddingLeft + (plotWidth - groupWidth) / 2;
+  const baselineY = paddingTop + plotHeight * (1 - baseline);
 
-  const barsSvg = bars
-    .map((b, i) => {
-      const cx = 12 + step * i + step / 2;
-      const x = cx - barWidth / 2;
-      if (b.coverRate === null) {
-        return `
-          <text x="${cx}" y="${(BAR_TOP + BAR_BOTTOM) / 2}" text-anchor="middle" class="chart-na-label">n/a</text>
-          <text x="${cx}" y="${CHART_HEIGHT - 6}" text-anchor="middle" class="chart-axis-label">${escapeHtml(b.label)}</text>
-        `;
+  const bars_svg = bars
+    .map((bar, i) => {
+      const x = groupLeft + i * (barWidth + gap);
+      const axisLabel = `<text x="${x + barWidth / 2}" y="${height - 8}" text-anchor="middle" class="chart-axis-label">${escapeHtml(bar.label)}</text>`;
+
+      if (bar.coverRate === null || bar.games === 0) {
+        return `${axisLabel}<text x="${x + barWidth / 2}" y="${paddingTop + plotHeight / 2}" text-anchor="middle" class="chart-na-label">n/a</text>`;
       }
-      const clamped = Math.max(0, Math.min(1, b.coverRate));
-      const barTop = BAR_TOP + (BAR_BOTTOM - BAR_TOP) * (1 - clamped);
-      const isGood = clamped >= 0.5;
-      const barY = isGood ? barTop : BASELINE_Y;
-      const barHeight = Math.max(2, Math.abs(BASELINE_Y - barTop));
-      const labelY = isGood ? barTop - 6 : barTop + 14;
+
+      const barHeight = Math.max(plotHeight * bar.coverRate, 1);
+      const y = paddingTop + plotHeight - barHeight;
+      const fillClass = bar.coverRate >= baseline ? "chart-bar-good" : "chart-bar-bad";
+      const pct = (bar.coverRate * 100).toFixed(1);
+
       return `
-        <rect x="${x}" y="${barY}" width="${barWidth}" height="${barHeight}" rx="4"
-              class="${isGood ? "chart-bar-good" : "chart-bar-bad"}" />
-        <text x="${cx}" y="${labelY}" text-anchor="middle" class="chart-value-label">${(clamped * 100).toFixed(1)}%</text>
-        <text x="${cx}" y="${CHART_HEIGHT - 6}" text-anchor="middle" class="chart-axis-label">${escapeHtml(b.label)}</text>
-        <text x="${cx}" y="${CHART_HEIGHT + 8}" text-anchor="middle" class="chart-na-label">n=${b.games}</text>
+        <rect x="${x}" y="${y}" width="${barWidth}" height="${barHeight}" rx="3" class="${fillClass}">
+          <title>${escapeHtml(bar.label)}: ${pct}% cover rate (${bar.games} games)</title>
+        </rect>
+        <text x="${x + barWidth / 2}" y="${y - 5}" text-anchor="middle" class="chart-value-label">${pct}%</text>
+        ${axisLabel}
       `;
     })
     .join("");
 
   return `
-    <svg viewBox="0 0 ${width} ${CHART_HEIGHT + 20}" width="100%" role="img" aria-label="Cover rate by segment, 50% baseline">
-      <line x1="12" y1="${BASELINE_Y}" x2="${width - 12}" y2="${BASELINE_Y}" class="chart-baseline-line" />
-      ${barsSvg}
-    </svg>
+    <div class="chart-card">
+      <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="cover rate by bucket, dashed line marks the 50% no-edge baseline" style="width:100%; height:auto; display:block;">
+        <line x1="${paddingLeft}" y1="${baselineY}" x2="${width - paddingRight}" y2="${baselineY}" class="chart-baseline-line" />
+        <text x="${width - paddingRight}" y="${baselineY - 4}" text-anchor="end" class="chart-axis-label">50%</text>
+        ${bars_svg}
+      </svg>
+    </div>
   `;
 }
 
@@ -69,9 +76,10 @@ const LINE_BOTTOM = 140;
 /**
  * A single team's rating trajectory over time — a 2px line, thin dots at
  * each point, a dashed zero baseline (the "league average" reference), and
- * direct labels only at the first/last/peak/trough points (this dashboard
- * has no JS, so there's no hover layer to lean on instead — see
- * references/interaction.md's fallback for static output).
+ * direct labels only at the first/last/peak/trough points (no JS hover
+ * layer here — see renderCoverRateChart's native <title> tooltip for the
+ * bar-chart equivalent; a <title> on every point of a dense line would be
+ * noisy, so this uses selective direct labels instead).
  */
 export function ratingTrendChart(points: RatingPoint[]): string {
   if (points.length === 0) {
@@ -104,9 +112,10 @@ export function ratingTrendChart(points: RatingPoint[]): string {
     })
     .join("");
 
-  // Sparse x-axis labels so they don't collide -- roughly every ~8th point, plus
-  // the last (skipping a regular tick that would land too close to it), with
-  // anchors flipped at the edges so labels don't clip past the viewBox.
+  // Sparse x-axis labels so they don't collide -- roughly every ~8th point,
+  // plus the last (skipping a regular tick that would land too close to
+  // it), with anchors flipped at the edges so labels don't clip past the
+  // viewBox.
   const tickEvery = Math.max(1, Math.ceil(points.length / 8));
   const anchorFor = (i: number) => (i === 0 ? "start" : i === lastIdx ? "end" : "middle");
   const xLabels = points
@@ -118,11 +127,13 @@ export function ratingTrendChart(points: RatingPoint[]): string {
     .join("");
 
   return `
-    <svg viewBox="0 0 ${width} ${LINE_HEIGHT}" width="100%" role="img" aria-label="Rating trend over time">
-      <line x1="12" y1="${zeroY.toFixed(1)}" x2="${width - 12}" y2="${zeroY.toFixed(1)}" class="chart-baseline-line" />
-      <path d="${pathD}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
-      ${dotsAndLabels}
-      ${xLabels}
-    </svg>
+    <div class="chart-card">
+      <svg viewBox="0 0 ${width} ${LINE_HEIGHT}" width="100%" role="img" aria-label="Rating trend over time">
+        <line x1="12" y1="${zeroY.toFixed(1)}" x2="${width - 12}" y2="${zeroY.toFixed(1)}" class="chart-baseline-line" />
+        <path d="${pathD}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+        ${dotsAndLabels}
+        ${xLabels}
+      </svg>
+    </div>
   `;
 }

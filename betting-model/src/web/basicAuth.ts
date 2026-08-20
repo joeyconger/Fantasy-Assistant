@@ -1,18 +1,17 @@
-import type { ServerResponse } from "node:http";
-import { config } from "../config.js";
-
 export function isBasicAuthorized(authHeader: string | undefined): boolean {
-  if (!config.dashboardUser || !config.dashboardPassword) return false;
+  const user = process.env.DASHBOARD_USER;
+  const pass = process.env.DASHBOARD_PASSWORD;
+  if (!user || !pass) return false;
   if (!authHeader?.startsWith("Basic ")) return false;
+
   const decoded = Buffer.from(authHeader.slice("Basic ".length), "base64").toString("utf8");
   const separatorIndex = decoded.indexOf(":");
   if (separatorIndex === -1) return false;
-  const user = decoded.slice(0, separatorIndex);
-  const password = decoded.slice(separatorIndex + 1);
-  return user === config.dashboardUser && password === config.dashboardPassword;
+
+  return decoded.slice(0, separatorIndex) === user && decoded.slice(separatorIndex + 1) === pass;
 }
 
-export function requireBasicAuth(res: ServerResponse): void {
-  res.writeHead(401, { "WWW-Authenticate": 'Basic realm="betting-model"', "Content-Type": "text/plain" });
-  res.end("unauthorized");
+export function requireBasicAuth(res: import("node:http").ServerResponse): void {
+  res.writeHead(401, { "WWW-Authenticate": 'Basic realm="Bet That"', "Content-Type": "text/plain" });
+  res.end("Authentication required");
 }

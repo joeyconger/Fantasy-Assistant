@@ -13,11 +13,8 @@ export const config = {
   cfbdApiKey: process.env.CFBD_API_KEY ?? "",
   oddsApiKey: process.env.ODDS_API_KEY ?? "",
   openMeteoBaseUrl: process.env.OPEN_METEO_BASE_URL ?? "https://api.open-meteo.com/v1",
+  openMeteoArchiveBaseUrl: process.env.OPEN_METEO_ARCHIVE_BASE_URL ?? "https://archive-api.open-meteo.com/v1",
   nodeEnv: process.env.NODE_ENV ?? "development",
-  // Dashboard/API auth — see src/web/basicAuth.ts and src/server.ts.
-  dashboardUser: process.env.DASHBOARD_USER ?? "",
-  dashboardPassword: process.env.DASHBOARD_PASSWORD ?? "",
-  adminToken: process.env.ADMIN_TOKEN ?? "",
 };
 
 export function requireCfbdApiKey(): string {

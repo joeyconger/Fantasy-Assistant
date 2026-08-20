@@ -8,9 +8,9 @@ export function escapeHtml(value: string | number): string {
 }
 
 // Token values match the dataviz skill's validated reference palette
-// (chart chrome/ink, status colors, categorical slot 1 as the site accent,
-// blue<->red as the diverging pair). Re-run scripts/validate_palette.js if
-// any of these ever change.
+// exactly (references/palette.md) — chart chrome/ink, status colors, and
+// categorical slot 1 (blue, used as the site accent). Re-run
+// scripts/validate_palette.js if any of these ever change.
 const STYLES = `
   :root {
     color-scheme: light dark;
@@ -27,8 +27,14 @@ const STYLES = `
     --good: #006300;
     --bad: #d03b3b;
     --warning: #fab219;
+    /* Diverging pair (blue <-> red) for magnitude-with-sign encodings like
+       power ratings — distinct from --good/--bad, which are reserved for
+       outcome status (cover rate, CLV), not generic positive/negative. */
     --diverge-pos: #2a78d6;
     --diverge-neg: #e34948;
+    /* Status colors for chart marks (non-text graphics, >=3:1 contrast) —
+       mode-invariant by design, unlike --good/--bad above which are tuned
+       separately for text contrast at 4.5:1. */
     --chart-good: #0ca30c;
     --chart-bad: #d03b3b;
     --chart-axis: #898781;
@@ -84,7 +90,11 @@ const STYLES = `
   }
   main { max-width: 1080px; margin: 0 auto; padding: 0 1.5rem; }
 
-  .topbar { background: var(--surface); border-bottom: 1px solid var(--border); margin-bottom: 2rem; }
+  /* Top bar */
+  .topbar {
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    margin-bottom: 2rem;
+  }
   .topbar-inner {
     max-width: 1080px; margin: 0 auto; padding: 0 1.5rem;
     display: flex; align-items: center; gap: 1.75rem; height: 56px;
@@ -95,10 +105,16 @@ const STYLES = `
   }
   .wordmark .dot { color: var(--accent); }
   nav { display: flex; gap: 0.25rem; font-size: 0.86rem; overflow-x: auto; }
-  nav a { color: var(--text-secondary); text-decoration: none; font-weight: 600; padding: 0.4rem 0.7rem; border-radius: 6px; white-space: nowrap; }
+  nav a {
+    color: var(--text-secondary); text-decoration: none; font-weight: 600;
+    padding: 0.4rem 0.7rem; border-radius: 6px; white-space: nowrap;
+  }
   nav a:hover { color: var(--text); background: var(--accent-wash); }
   nav a.active { color: var(--accent); background: var(--accent-wash); }
-  .topbar-tag { margin-left: auto; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+  .topbar-tag {
+    margin-left: auto; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.03em;
+    text-transform: uppercase; color: var(--muted); white-space: nowrap;
+  }
 
   h1 { font-size: 1.5rem; font-weight: 800; letter-spacing: -0.01em; margin: 0 0 0.3rem; }
   h2 { font-size: 1.05rem; font-weight: 700; margin: 2.25rem 0 0.85rem; letter-spacing: -0.005em; }
@@ -111,8 +127,8 @@ const STYLES = `
   }
   .banner strong { color: var(--text); }
 
-  .stat-row {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px;
+  /* Stat tile row — the KPI-forward headline treatment */
+  .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px;
     background: var(--border); border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
     margin-bottom: 1.75rem; box-shadow: var(--shadow);
   }
@@ -123,9 +139,16 @@ const STYLES = `
   .stat-tile .stat-value.bad { color: var(--bad); }
   .stat-tile .stat-sub { font-size: 0.78rem; color: var(--muted); margin-top: 0.2rem; }
 
-  .card { background: var(--surface-raised); border: 1px solid var(--border); border-radius: 10px; padding: 1.1rem 1.1rem 0.6rem; margin-bottom: 1.75rem; box-shadow: var(--shadow); }
-  .chart-card { background: var(--surface-raised); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1rem 0.5rem; margin-bottom: 1.75rem; box-shadow: var(--shadow); }
+  /* Cards */
+  .card {
+    background: var(--surface-raised); border: 1px solid var(--border); border-radius: 10px;
+    padding: 1.1rem 1.1rem 0.6rem; margin-bottom: 1.75rem; box-shadow: var(--shadow);
+  }
+  .chart-card { background: var(--surface-raised); border: 1px solid var(--border); border-radius: 10px;
+    padding: 1rem 1rem 0.5rem; margin-bottom: 1.75rem; box-shadow: var(--shadow);
+  }
 
+  /* Tables */
   table { width: 100%; border-collapse: collapse; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; box-shadow: var(--shadow); }
   th, td { text-align: left; padding: 0.6rem 0.85rem; border-bottom: 1px solid var(--gridline); font-size: 0.87rem; }
   th { color: var(--muted); font-weight: 700; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.03em; background: var(--surface); }
@@ -138,6 +161,7 @@ const STYLES = `
   a.run-link { color: var(--accent); text-decoration: none; font-weight: 600; }
   a.run-link:hover { text-decoration: underline; }
 
+  /* Badges/pills — status never carries meaning by color alone; label text is the badge content itself */
   .badge {
     display: inline-flex; align-items: center; gap: 0.3rem;
     padding: 0.18rem 0.55rem; border-radius: 999px; font-size: 0.76rem; font-weight: 700;
@@ -164,6 +188,7 @@ const STYLES = `
   }
   button:hover { filter: brightness(1.08); }
 
+  /* Chart marks */
   .chart-bar-good { fill: var(--chart-good); }
   .chart-bar-bad { fill: var(--chart-bad); }
   .chart-axis-label { fill: var(--chart-axis); font-size: 10px; }
@@ -171,21 +196,36 @@ const STYLES = `
   .chart-baseline-line { stroke: var(--chart-baseline); stroke-width: 1; stroke-dasharray: 3 3; }
   .chart-na-label { fill: var(--muted); font-size: 10px; }
 
-  /* Inline power-rating bar -- diverging encoding centered on a zero baseline. */
+  /* Inline power-rating bar — diverging encoding (blue = above average,
+     red = below), centered on a zero baseline. Bar length is relative to
+     the max |rating| in the list it's rendered within (set via inline
+     style, computed per page). */
   .power-bar-cell { min-width: 180px; }
-  .power-bar-track { position: relative; height: 14px; border-radius: 4px; background: var(--gridline); overflow: hidden; }
-  .power-bar-fill { position: absolute; top: 0; bottom: 0; border-radius: 3px; }
+  .power-bar-track {
+    position: relative; height: 14px; border-radius: 4px;
+    background: var(--gridline); overflow: hidden;
+  }
+  .power-bar-fill {
+    position: absolute; top: 0; bottom: 0; border-radius: 3px;
+  }
   .power-bar-fill.pos { left: 50%; background: var(--diverge-pos); }
   .power-bar-fill.neg { right: 50%; background: var(--diverge-neg); }
-  .power-bar-center { position: absolute; top: -2px; bottom: -2px; left: 50%; width: 1px; background: var(--chart-baseline); }
+  .power-bar-center {
+    position: absolute; top: -2px; bottom: -2px; left: 50%; width: 1px;
+    background: var(--chart-baseline);
+  }
 
-  /* CSS-only tabs (radio-input hack, no JS). */
+  /* CSS-only tabs (radio-input hack, no JS) — tab-input radios live before
+     tab-labels/tab-panels in the DOM so :checked ~ general-sibling
+     selectors can target both. Each tabset instance is scoped by a unique
+     id prefix so multiple tabsets can coexist on one page. */
   .tabset { margin-bottom: 1.75rem; }
   .tabset input.tab-input { position: absolute; opacity: 0; pointer-events: none; }
   .tab-labels { display: flex; gap: 0.2rem; border-bottom: 1px solid var(--border); overflow-x: auto; margin-bottom: 1.25rem; }
   .tab-labels label {
     padding: 0.6rem 0.9rem; font-size: 0.85rem; font-weight: 700; color: var(--text-secondary);
-    cursor: pointer; white-space: nowrap; border-bottom: 2px solid transparent; margin-bottom: -1px; user-select: none;
+    cursor: pointer; white-space: nowrap; border-bottom: 2px solid transparent; margin-bottom: -1px;
+    user-select: none;
   }
   .tab-labels label:hover { color: var(--text); }
   .tab-panels .tab-panel { display: none; }
@@ -205,7 +245,7 @@ export function renderPage(title: string, bodyHtml: string, activePath = ""): st
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(title)} — Betting Model</title>
+<title>${escapeHtml(title)} — Bet That</title>
 <style>${STYLES}</style>
 </head>
 <body>
@@ -221,7 +261,7 @@ function topbar(activePath: string): string {
   return `
     <div class="topbar">
       <div class="topbar-inner">
-        <span class="wordmark">CLV<span class="dot">•</span>MODEL</span>
+        <span class="wordmark">BET<span class="dot">•</span>THAT</span>
         <nav>
           ${link("/", "Backtests")}
           ${link("/ratings", "Ratings")}
@@ -234,6 +274,11 @@ function topbar(activePath: string): string {
   `;
 }
 
+/** Kept for pages that still call nav() directly — the topbar above already includes navigation, so this is now a no-op wrapper for backward compatibility during the transition. */
+export function nav(): string {
+  return "";
+}
+
 export interface StatTile {
   label: string;
   value: string;
@@ -241,6 +286,7 @@ export interface StatTile {
   sub?: string;
 }
 
+/** The KPI-row treatment — headline numbers get a hero stat-tile instead of being buried in the first row of a table. */
 export function statTiles(tiles: StatTile[]): string {
   return `
     <div class="stat-row">
@@ -258,6 +304,7 @@ export function statTiles(tiles: StatTile[]): string {
   `;
 }
 
+/** A rounded status badge — cover-rate/CLV style pill, text-labeled so status is never color-alone. */
 export function badge(text: string, tone: "good" | "bad" | "neutral" = "neutral"): string {
   return `<span class="badge badge-${tone}">${text}</span>`;
 }
@@ -271,6 +318,11 @@ export interface TabSpec {
   html: string;
 }
 
+/**
+ * CSS-only tabs (no JS) via the radio-input hack — see the .tabset/.tab-*
+ * rules in STYLES. idPrefix must be unique per tabset on a page (only one
+ * tabset per backtest report page today, but scoped for safety).
+ */
 export function tabs(idPrefix: string, specs: TabSpec[]): string {
   const inputs = specs
     .map((_, i) => `<input type="radio" name="${idPrefix}" id="${idPrefix}-${i}" class="tab-input"${i === 0 ? " checked" : ""}>`)

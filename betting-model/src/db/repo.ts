@@ -171,17 +171,20 @@ export interface UpsertWeatherInput {
   tempF: number | null;
   windMph: number | null;
   precipitationProbability: number | null;
+  /** Actual precipitation (not a probability) — only ever set by historical/archive weather, never the live forecast path. See migration 0004. */
+  precipitationActual?: number | null;
   isDome: boolean;
   source: string;
 }
 
 export async function upsertWeather(input: UpsertWeatherInput): Promise<void> {
   await pool.query(
-    `INSERT INTO weather (game_id, forecast_at, temp_f, wind_mph, precipitation_probability, is_dome, source)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)
+    `INSERT INTO weather (game_id, forecast_at, temp_f, wind_mph, precipitation_probability, precipitation_actual, is_dome, source)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
      ON CONFLICT (game_id)
      DO UPDATE SET forecast_at = EXCLUDED.forecast_at, temp_f = EXCLUDED.temp_f,
        wind_mph = EXCLUDED.wind_mph, precipitation_probability = EXCLUDED.precipitation_probability,
+       precipitation_actual = EXCLUDED.precipitation_actual,
        is_dome = EXCLUDED.is_dome, source = EXCLUDED.source`,
     [
       input.gameId,
@@ -189,10 +192,39 @@ export async function upsertWeather(input: UpsertWeatherInput): Promise<void> {
       input.tempF,
       input.windMph,
       input.precipitationProbability,
+      input.precipitationActual ?? null,
       input.isDome,
       input.source,
     ],
   );
+}
+
+export interface CompletedGameForWeather {
+  id: number;
+  gameDate: Date;
+  homeTeamSourceId: string;
+  /** This game's own CFBD/nflverse source_id — used to re-look-up CFBD venue data for CFB. */
+  sourceId: string;
+}
+
+/** Completed games needing a historical weather backfill — unlike getUpcomingGames, no date-range filter (any past completed game). */
+export async function getCompletedGamesForWeather(
+  sport: Sport,
+  seasonStart: number,
+  seasonEnd: number,
+): Promise<CompletedGameForWeather[]> {
+  const result = await pool.query<{ id: number; game_date: Date; source_id: string; game_source_id: string }>(
+    `SELECT g.id, g.game_date, t.source_id, g.source_id AS game_source_id
+     FROM games g JOIN teams t ON t.id = g.home_team_id
+     WHERE g.sport = $1 AND g.season BETWEEN $2 AND $3 AND g.status = 'final' AND g.game_date IS NOT NULL`,
+    [sport, seasonStart, seasonEnd],
+  );
+  return result.rows.map((r) => ({
+    id: r.id,
+    gameDate: r.game_date,
+    homeTeamSourceId: r.source_id,
+    sourceId: r.game_source_id,
+  }));
 }
 
 export interface InsertInjuryInput {
@@ -257,6 +289,11 @@ export async function findTeamIdFuzzy(sport: Sport, externalName: string): Promi
   return matches.length === 1 ? matches[0]!.id : undefined;
 }
 
+export async function getGameDate(gameId: number): Promise<Date | undefined> {
+  const result = await pool.query<{ game_date: Date }>(`SELECT game_date FROM games WHERE id = $1`, [gameId]);
+  return result.rows[0]?.game_date;
+}
+
 export async function getGameTeamIds(gameId: number): Promise<{ homeTeamId: number; awayTeamId: number } | undefined> {
   const result = await pool.query<{ home_team_id: number; away_team_id: number }>(
     `SELECT home_team_id, away_team_id FROM games WHERE id = $1`,
@@ -287,87 +324,166 @@ export interface UpsertTeamGameStatsInput {
   source: "cfbd" | "nflverse";
 }
 
-export interface TeamGameStatsRow {
-  offEpaPlay: number;
-  defEpaPlay: number;
+export async function upsertTeamGameStats(input: UpsertTeamGameStatsInput): Promise<void> {
+  await pool.query(
+    `INSERT INTO team_game_stats (
+       game_id, team_id, is_home, off_epa_play, off_epa_pass, off_epa_rush,
+       def_epa_play, def_epa_pass, def_epa_rush, off_success_rate,
+       off_success_rate_pass, off_success_rate_rush, def_success_rate,
+       def_success_rate_pass, def_success_rate_rush, plays_offense, plays_defense, source
+     )
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+     ON CONFLICT (game_id, team_id)
+     DO UPDATE SET
+       is_home = EXCLUDED.is_home,
+       off_epa_play = EXCLUDED.off_epa_play, off_epa_pass = EXCLUDED.off_epa_pass, off_epa_rush = EXCLUDED.off_epa_rush,
+       def_epa_play = EXCLUDED.def_epa_play, def_epa_pass = EXCLUDED.def_epa_pass, def_epa_rush = EXCLUDED.def_epa_rush,
+       off_success_rate = EXCLUDED.off_success_rate, off_success_rate_pass = EXCLUDED.off_success_rate_pass,
+       off_success_rate_rush = EXCLUDED.off_success_rate_rush, def_success_rate = EXCLUDED.def_success_rate,
+       def_success_rate_pass = EXCLUDED.def_success_rate_pass, def_success_rate_rush = EXCLUDED.def_success_rate_rush,
+       plays_offense = EXCLUDED.plays_offense, plays_defense = EXCLUDED.plays_defense, source = EXCLUDED.source`,
+    [
+      input.gameId,
+      input.teamId,
+      input.isHome,
+      input.offEpaPlay,
+      input.offEpaPass,
+      input.offEpaRush,
+      input.defEpaPlay,
+      input.defEpaPass,
+      input.defEpaRush,
+      input.offSuccessRate,
+      input.offSuccessRatePass,
+      input.offSuccessRateRush,
+      input.defSuccessRate,
+      input.defSuccessRatePass,
+      input.defSuccessRateRush,
+      input.playsOffense,
+      input.playsDefense,
+      input.source,
+    ],
+  );
 }
 
-export interface FinalGameWithStats {
+export interface GameForRating {
   gameId: number;
-  season: number;
   week: number;
-  gameDate: Date | null;
   homeTeamId: number;
   awayTeamId: number;
-  homeScore: number;
-  awayScore: number;
-  homeStats: TeamGameStatsRow | null;
-  awayStats: TeamGameStatsRow | null;
+  homeOffEpa: number;
+  homeDefEpa: number;
+  awayOffEpa: number;
+  awayDefEpa: number;
 }
 
-/**
- * Every completed game in a season, in play order, with each side's EPA/play
- * stats (null if that team's stats row hasn't been ingested yet — callers
- * skip those games for rating updates rather than guessing). Drives the
- * Phase 2 rating computation, which needs to replay a season game by game.
- */
-export async function getFinalGamesWithStatsForSeason(
+/** Completed games with both teams' EPA/play stats present — what the rating engine consumes. */
+export async function getSeasonGamesForRating(
   sport: Sport,
   season: number,
-  seasonType: "regular" | "postseason" = "regular",
-): Promise<FinalGameWithStats[]> {
+  throughWeek: number,
+): Promise<GameForRating[]> {
   const result = await pool.query<{
     game_id: number;
-    season: number;
     week: number;
-    game_date: Date | null;
     home_team_id: number;
     away_team_id: number;
-    home_score: number;
-    away_score: number;
-    home_off_epa_play: number | null;
-    home_def_epa_play: number | null;
-    away_off_epa_play: number | null;
-    away_def_epa_play: number | null;
+    home_off_epa: number;
+    home_def_epa: number;
+    away_off_epa: number;
+    away_def_epa: number;
   }>(
-    `SELECT g.id AS game_id, g.season, g.week, g.game_date, g.home_team_id, g.away_team_id,
-            g.home_score, g.away_score,
-            hs.off_epa_play AS home_off_epa_play, hs.def_epa_play AS home_def_epa_play,
-            aws.off_epa_play AS away_off_epa_play, aws.def_epa_play AS away_def_epa_play
+    `SELECT g.id AS game_id, g.week, g.home_team_id, g.away_team_id,
+            home_stats.off_epa_play AS home_off_epa, home_stats.def_epa_play AS home_def_epa,
+            away_stats.off_epa_play AS away_off_epa, away_stats.def_epa_play AS away_def_epa
      FROM games g
-     LEFT JOIN team_game_stats hs ON hs.game_id = g.id AND hs.team_id = g.home_team_id
-     LEFT JOIN team_game_stats aws ON aws.game_id = g.id AND aws.team_id = g.away_team_id
-     WHERE g.sport = $1 AND g.season = $2 AND g.season_type = $3 AND g.status = 'final'
-       AND g.home_score IS NOT NULL AND g.away_score IS NOT NULL
-     ORDER BY g.week ASC, g.game_date ASC NULLS LAST, g.id ASC`,
-    [sport, season, seasonType],
+     JOIN team_game_stats home_stats ON home_stats.game_id = g.id AND home_stats.team_id = g.home_team_id
+     JOIN team_game_stats away_stats ON away_stats.game_id = g.id AND away_stats.team_id = g.away_team_id
+     WHERE g.sport = $1 AND g.season = $2 AND g.week <= $3 AND g.status = 'final'
+       AND home_stats.off_epa_play IS NOT NULL AND home_stats.def_epa_play IS NOT NULL
+       AND away_stats.off_epa_play IS NOT NULL AND away_stats.def_epa_play IS NOT NULL
+     ORDER BY g.week ASC, g.id ASC`,
+    [sport, season, throughWeek],
   );
   return result.rows.map((r) => ({
     gameId: r.game_id,
-    season: r.season,
     week: r.week,
-    gameDate: r.game_date,
     homeTeamId: r.home_team_id,
     awayTeamId: r.away_team_id,
-    homeScore: r.home_score,
-    awayScore: r.away_score,
-    homeStats:
-      r.home_off_epa_play === null || r.home_def_epa_play === null
-        ? null
-        : { offEpaPlay: r.home_off_epa_play, defEpaPlay: r.home_def_epa_play },
-    awayStats:
-      r.away_off_epa_play === null || r.away_def_epa_play === null
-        ? null
-        : { offEpaPlay: r.away_off_epa_play, defEpaPlay: r.away_def_epa_play },
+    homeOffEpa: r.home_off_epa,
+    homeDefEpa: r.home_def_epa,
+    awayOffEpa: r.away_off_epa,
+    awayDefEpa: r.away_def_epa,
   }));
 }
 
-export async function getSeasonsWithFinalGames(sport: Sport): Promise<number[]> {
-  const result = await pool.query<{ season: number }>(
-    `SELECT DISTINCT season FROM games WHERE sport = $1 AND status = 'final' ORDER BY season ASC`,
-    [sport],
+export async function getPriorSeasonFinalRating(
+  teamId: number,
+  sport: Sport,
+  priorSeason: number,
+  method: "elo" | "ridge",
+): Promise<number | undefined> {
+  const result = await pool.query<{ rating: number }>(
+    `SELECT rating FROM team_ratings
+     WHERE team_id = $1 AND sport = $2 AND season = $3 AND method = $4
+     ORDER BY through_week DESC LIMIT 1`,
+    [teamId, sport, priorSeason, method],
   );
-  return result.rows.map((r) => r.season);
+  return result.rows[0]?.rating;
+}
+
+export interface ExternalRatingInput {
+  teamId: number;
+  season: number;
+  /** null = season-final value (cfbd_sp, which has no week granularity). */
+  week: number | null;
+  source: "cfbd_sp" | "cfbd_elo";
+  rating: number;
+}
+
+/** See db/migrations/0003_external_ratings.sql for why this is two partial-index upserts, not one. */
+export async function upsertExternalRating(input: ExternalRatingInput): Promise<void> {
+  if (input.week === null) {
+    await pool.query(
+      `INSERT INTO external_ratings (team_id, season, week, source, rating)
+       VALUES ($1, $2, NULL, $3, $4)
+       ON CONFLICT (team_id, season, source) WHERE week IS NULL
+       DO UPDATE SET rating = EXCLUDED.rating`,
+      [input.teamId, input.season, input.source, input.rating],
+    );
+  } else {
+    await pool.query(
+      `INSERT INTO external_ratings (team_id, season, week, source, rating)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (team_id, season, week, source) WHERE week IS NOT NULL
+       DO UPDATE SET rating = EXCLUDED.rating`,
+      [input.teamId, input.season, input.week, input.source, input.rating],
+    );
+  }
+}
+
+/** Season Y-1's SP+ used as season Y's rating prior — see client.ts's getSpRatings doc. */
+export async function getPriorSeasonSpRating(teamId: number, priorSeason: number): Promise<number | undefined> {
+  const result = await pool.query<{ rating: number }>(
+    `SELECT rating FROM external_ratings WHERE team_id = $1 AND season = $2 AND source = 'cfbd_sp' AND week IS NULL`,
+    [teamId, priorSeason],
+  );
+  return result.rows[0]?.rating;
+}
+
+/** Every team's CFBD Elo as of a given week — the population a single team's z-score is computed against. */
+export async function getCfbdEloDistributionForWeek(
+  sport: Sport,
+  season: number,
+  week: number,
+): Promise<Map<number, number>> {
+  const result = await pool.query<{ team_id: number; rating: number }>(
+    `SELECT er.team_id, er.rating
+     FROM external_ratings er
+     JOIN teams t ON t.id = er.team_id
+     WHERE t.sport = $1 AND er.season = $2 AND er.week = $3 AND er.source = 'cfbd_elo'`,
+    [sport, season, week],
+  );
+  return new Map(result.rows.map((r) => [r.team_id, r.rating]));
 }
 
 export interface UpsertTeamRatingInput {
@@ -383,37 +499,231 @@ export interface UpsertTeamRatingInput {
 export async function upsertTeamRating(input: UpsertTeamRatingInput): Promise<void> {
   await pool.query(
     `INSERT INTO team_ratings (team_id, sport, season, through_week, rating, rating_error, method, computed_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7, now())
+     VALUES ($1,$2,$3,$4,$5,$6,$7,now())
      ON CONFLICT (team_id, season, through_week, method)
-     DO UPDATE SET rating = EXCLUDED.rating, rating_error = EXCLUDED.rating_error, sport = EXCLUDED.sport, computed_at = now()`,
+     DO UPDATE SET rating = EXCLUDED.rating, rating_error = EXCLUDED.rating_error, computed_at = now()`,
     [input.teamId, input.sport, input.season, input.throughWeek, input.rating, input.ratingError, input.method],
   );
 }
 
-/** A team's most recent rating from a prior season — the input to season carryover. */
-export async function getPriorSeasonFinalRating(
-  teamId: number,
-  sport: Sport,
-  priorSeason: number,
-  method: "elo" | "ridge" = "elo",
-): Promise<number | undefined> {
-  const result = await pool.query<{ rating: number }>(
-    `SELECT rating FROM team_ratings
-     WHERE team_id = $1 AND sport = $2 AND season = $3 AND method = $4
-     ORDER BY through_week DESC LIMIT 1`,
-    [teamId, sport, priorSeason, method],
+/** Most recent line pulled for a game, any book — the "market line at run time" the model anchors to. */
+export async function getLatestMarketLine(gameId: number): Promise<number | undefined> {
+  const result = await pool.query<{ spread_home: number }>(
+    `SELECT spread_home FROM odds_snapshots
+     WHERE game_id = $1 AND spread_home IS NOT NULL
+     ORDER BY captured_at DESC LIMIT 1`,
+    [gameId],
   );
-  return result.rows[0]?.rating;
+  return result.rows[0]?.spread_home;
 }
 
-export async function getGamesPlayedCount(teamId: number, sport: Sport, season: number, throughWeek: number): Promise<number> {
-  const result = await pool.query<{ count: string }>(
-    `SELECT count(*)::int AS count FROM games
-     WHERE sport = $1 AND season = $2 AND week <= $3 AND status = 'final'
-       AND (home_team_id = $4 OR away_team_id = $4)`,
-    [sport, season, throughWeek, teamId],
+export interface GameSummary {
+  id: number;
+  homeTeamId: number;
+  awayTeamId: number;
+  status: "scheduled" | "in_progress" | "final";
+}
+
+export async function getGamesForWeek(sport: Sport, season: number, week: number): Promise<GameSummary[]> {
+  const result = await pool.query<{ id: number; home_team_id: number; away_team_id: number; status: GameSummary["status"] }>(
+    `SELECT id, home_team_id, away_team_id, status FROM games
+     WHERE sport = $1 AND season = $2 AND week = $3
+     ORDER BY id ASC`,
+    [sport, season, week],
   );
-  return Number(result.rows[0]?.count ?? 0);
+  return result.rows.map((r) => ({ id: r.id, homeTeamId: r.home_team_id, awayTeamId: r.away_team_id, status: r.status }));
+}
+
+export interface UpsertModelPredictionInput {
+  gameId: number;
+  method: string;
+  modelSpreadHome: number;
+  modelTotal: number | null;
+  confidence: number | null;
+  marketSpreadHome: number | null;
+}
+
+export async function insertModelPrediction(input: UpsertModelPredictionInput): Promise<void> {
+  await pool.query(
+    `INSERT INTO model_predictions (game_id, method, model_spread_home, model_total, confidence, market_spread_home, predicted_at)
+     VALUES ($1,$2,$3,$4,$5,$6,now())
+     ON CONFLICT (game_id, method, predicted_at) DO NOTHING`,
+    [input.gameId, input.method, input.modelSpreadHome, input.modelTotal, input.confidence, input.marketSpreadHome],
+  );
+}
+
+/**
+ * The opening line only — deliberately separate from getLatestMarketLine
+ * (which is fine for live polling, where "latest" can never be later than
+ * now). A backtest must anchor to the opening line specifically: taking
+ * the single latest snapshot for a historical game would frequently return
+ * the closing line, silently handing the model information it wouldn't
+ * have had at prediction time.
+ */
+export async function getOpeningLine(gameId: number): Promise<number | undefined> {
+  const result = await pool.query<{ spread_home: number }>(
+    `SELECT spread_home FROM odds_snapshots
+     WHERE game_id = $1 AND snapshot_type = 'opening' AND spread_home IS NOT NULL
+     ORDER BY captured_at ASC LIMIT 1`,
+    [gameId],
+  );
+  return result.rows[0]?.spread_home;
+}
+
+export async function getClosingLine(gameId: number): Promise<number | undefined> {
+  const result = await pool.query<{ spread_home: number }>(
+    `SELECT spread_home FROM odds_snapshots
+     WHERE game_id = $1 AND snapshot_type = 'closing' AND spread_home IS NOT NULL
+     ORDER BY captured_at DESC LIMIT 1`,
+    [gameId],
+  );
+  return result.rows[0]?.spread_home;
+}
+
+export async function getDistinctWeeks(sport: Sport, season: number): Promise<number[]> {
+  const result = await pool.query<{ week: number }>(
+    `SELECT DISTINCT week FROM games WHERE sport = $1 AND season = $2 AND status = 'final' ORDER BY week ASC`,
+    [sport, season],
+  );
+  return result.rows.map((r) => r.week);
+}
+
+export interface FinalGame {
+  id: number;
+  homeTeamId: number;
+  awayTeamId: number;
+  homeScore: number;
+  awayScore: number;
+}
+
+export async function getFinalGamesForWeek(sport: Sport, season: number, week: number): Promise<FinalGame[]> {
+  const result = await pool.query<{
+    id: number;
+    home_team_id: number;
+    away_team_id: number;
+    home_score: number;
+    away_score: number;
+  }>(
+    `SELECT id, home_team_id, away_team_id, home_score, away_score
+     FROM games
+     WHERE sport = $1 AND season = $2 AND week = $3 AND status = 'final'
+       AND home_score IS NOT NULL AND away_score IS NOT NULL
+     ORDER BY id ASC`,
+    [sport, season, week],
+  );
+  return result.rows.map((r) => ({
+    id: r.id,
+    homeTeamId: r.home_team_id,
+    awayTeamId: r.away_team_id,
+    homeScore: r.home_score,
+    awayScore: r.away_score,
+  }));
+}
+
+export interface LatestPrediction {
+  modelSpreadHome: number;
+  confidence: number | null;
+}
+
+export async function getLatestPrediction(gameId: number, method: string): Promise<LatestPrediction | undefined> {
+  const result = await pool.query<{ model_spread_home: number; confidence: number | null }>(
+    `SELECT model_spread_home, confidence FROM model_predictions
+     WHERE game_id = $1 AND method = $2
+     ORDER BY predicted_at DESC LIMIT 1`,
+    [gameId, method],
+  );
+  const row = result.rows[0];
+  return row ? { modelSpreadHome: row.model_spread_home, confidence: row.confidence } : undefined;
+}
+
+export interface InsertBacktestRunInput {
+  name: string;
+  method: string;
+  seasonStart: number;
+  seasonEnd: number;
+  params: Record<string, unknown>;
+}
+
+export async function insertBacktestRun(input: InsertBacktestRunInput): Promise<number> {
+  const result = await pool.query<{ id: number }>(
+    `INSERT INTO backtest_runs (name, method, season_start, season_end, params)
+     VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+    [input.name, input.method, input.seasonStart, input.seasonEnd, JSON.stringify(input.params)],
+  );
+  return result.rows[0]!.id;
+}
+
+export interface InsertBacktestResultInput {
+  backtestRunId: number;
+  gameId: number;
+  modelSpreadHome: number;
+  /** Null when no opening line exists for this game — see clv's doc. */
+  openingSpreadHome: number | null;
+  closingSpreadHome: number;
+  actualMarginHome: number;
+  /** Null when openingSpreadHome is null — true CLV needs an opening price to compare against. */
+  clv: number | null;
+  covered: boolean | null;
+  beatClose: boolean | null;
+  /** The prediction's own error estimate at the time it was made — see ratings/elo.ts's predictSpread. */
+  confidence: number | null;
+}
+
+export async function insertBacktestResult(input: InsertBacktestResultInput): Promise<void> {
+  await pool.query(
+    `INSERT INTO backtest_results (
+       backtest_run_id, game_id, model_spread_home, opening_spread_home, closing_spread_home,
+       actual_margin_home, clv, covered, beat_close, confidence
+     )
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+     ON CONFLICT (backtest_run_id, game_id)
+     DO UPDATE SET model_spread_home = EXCLUDED.model_spread_home, opening_spread_home = EXCLUDED.opening_spread_home,
+       closing_spread_home = EXCLUDED.closing_spread_home, actual_margin_home = EXCLUDED.actual_margin_home,
+       clv = EXCLUDED.clv, covered = EXCLUDED.covered, beat_close = EXCLUDED.beat_close, confidence = EXCLUDED.confidence`,
+    [
+      input.backtestRunId,
+      input.gameId,
+      input.modelSpreadHome,
+      input.openingSpreadHome,
+      input.closingSpreadHome,
+      input.actualMarginHome,
+      input.clv,
+      input.covered,
+      input.beatClose,
+      input.confidence,
+    ],
+  );
+}
+
+export interface BacktestRunSummary {
+  id: number;
+  name: string;
+  method: string;
+  sport: string | null;
+  seasonStart: number;
+  seasonEnd: number;
+  createdAt: Date;
+}
+
+export async function listBacktestRuns(): Promise<BacktestRunSummary[]> {
+  const result = await pool.query<{
+    id: number;
+    name: string;
+    method: string;
+    params: { sport?: string } | null;
+    season_start: number;
+    season_end: number;
+    created_at: Date;
+  }>(`SELECT id, name, method, params, season_start, season_end, created_at FROM backtest_runs ORDER BY id DESC`);
+  return result.rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    method: r.method,
+    sport: r.params?.sport ?? null,
+    seasonStart: r.season_start,
+    seasonEnd: r.season_end,
+    createdAt: r.created_at,
+  }));
 }
 
 export interface TeamRatingRow {
@@ -455,7 +765,7 @@ export interface RatingHistoryPoint {
   rating: number;
 }
 
-/** A team's full rating trajectory across every season/week checkpoint it's been rated at, oldest first — the input to the /teams/:id trend chart. */
+/** A team's full rating trajectory across every season/week checkpoint it's been rated at, oldest first. */
 export async function getRatingHistoryForTeam(teamId: number, sport: Sport): Promise<RatingHistoryPoint[]> {
   const result = await pool.query<{ season: number; through_week: number; rating: number }>(
     `SELECT season, through_week, rating FROM team_ratings
@@ -464,272 +774,6 @@ export async function getRatingHistoryForTeam(teamId: number, sport: Sport): Pro
     [teamId, sport],
   );
   return result.rows.map((r) => ({ season: r.season, throughWeek: r.through_week, rating: r.rating }));
-}
-
-/** A team's most recent rating strictly before a given week — the input to predictSpread. Defaults to 0 (league average) if the team has no rating yet (early season / never rated). */
-export async function getTeamRatingBeforeWeek(
-  teamId: number,
-  sport: Sport,
-  season: number,
-  beforeWeek: number,
-  method: "elo" | "ridge" = "elo",
-): Promise<number> {
-  const result = await pool.query<{ rating: number }>(
-    `SELECT rating FROM team_ratings
-     WHERE team_id = $1 AND sport = $2 AND season = $3 AND through_week < $4 AND method = $5
-     ORDER BY through_week DESC LIMIT 1`,
-    [teamId, sport, season, beforeWeek, method],
-  );
-  return result.rows[0]?.rating ?? 0;
-}
-
-/** The market spread this model anchors predictions to: closing line if we have one, else the most recent snapshot. */
-export async function getMarketSpreadHome(gameId: number): Promise<number | null> {
-  const result = await pool.query<{ spread_home: number | null }>(
-    `SELECT spread_home FROM odds_snapshots
-     WHERE game_id = $1 AND spread_home IS NOT NULL
-     ORDER BY (snapshot_type = 'closing') DESC, captured_at DESC
-     LIMIT 1`,
-    [gameId],
-  );
-  return result.rows[0]?.spread_home ?? null;
-}
-
-export interface GameForWeek {
-  gameId: number;
-  homeTeamId: number;
-  awayTeamId: number;
-  homeTeamName: string;
-  awayTeamName: string;
-}
-
-export async function getGamesForWeek(sport: Sport, season: number, week: number): Promise<GameForWeek[]> {
-  const result = await pool.query<{
-    game_id: number;
-    home_team_id: number;
-    away_team_id: number;
-    home_name: string;
-    away_name: string;
-  }>(
-    `SELECT g.id AS game_id, g.home_team_id, g.away_team_id, ht.name AS home_name, at.name AS away_name
-     FROM games g
-     JOIN teams ht ON ht.id = g.home_team_id
-     JOIN teams at ON at.id = g.away_team_id
-     WHERE g.sport = $1 AND g.season = $2 AND g.week = $3
-     ORDER BY g.game_date ASC NULLS LAST, g.id ASC`,
-    [sport, season, week],
-  );
-  return result.rows.map((r) => ({
-    gameId: r.game_id,
-    homeTeamId: r.home_team_id,
-    awayTeamId: r.away_team_id,
-    homeTeamName: r.home_name,
-    awayTeamName: r.away_name,
-  }));
-}
-
-export interface InsertModelPredictionInput {
-  gameId: number;
-  method: string;
-  modelSpreadHome: number;
-  modelTotal: number | null;
-  confidence: number | null;
-  marketSpreadHome: number | null;
-}
-
-export async function insertModelPrediction(input: InsertModelPredictionInput): Promise<void> {
-  await pool.query(
-    `INSERT INTO model_predictions (game_id, method, model_spread_home, model_total, confidence, market_spread_home, predicted_at)
-     VALUES ($1,$2,$3,$4,$5,$6, now())
-     ON CONFLICT (game_id, method, predicted_at) DO NOTHING`,
-    [input.gameId, input.method, input.modelSpreadHome, input.modelTotal, input.confidence, input.marketSpreadHome],
-  );
-}
-
-export interface PredictionRow {
-  gameId: number;
-  homeTeam: string;
-  awayTeam: string;
-  modelSpreadHome: number;
-  marketSpreadHome: number | null;
-  confidence: number | null;
-}
-
-/** The latest ('elo') prediction per game for a week — DISTINCT ON game_id ordered by most recent predicted_at. */
-export async function getPredictionsForWeek(sport: Sport, season: number, week: number): Promise<PredictionRow[]> {
-  const result = await pool.query<{
-    game_id: number;
-    home: string;
-    away: string;
-    model_spread_home: number;
-    market_spread_home: number | null;
-    confidence: number | null;
-  }>(
-    `SELECT DISTINCT ON (g.id) g.id AS game_id, ht.name AS home, at.name AS away,
-            mp.model_spread_home, mp.market_spread_home, mp.confidence
-     FROM model_predictions mp
-     JOIN games g ON g.id = mp.game_id
-     JOIN teams ht ON ht.id = g.home_team_id
-     JOIN teams at ON at.id = g.away_team_id
-     WHERE g.sport = $1 AND g.season = $2 AND g.week = $3 AND mp.method = 'elo'
-     ORDER BY g.id, mp.predicted_at DESC`,
-    [sport, season, week],
-  );
-  return result.rows.map((r) => ({
-    gameId: r.game_id,
-    homeTeam: r.home,
-    awayTeam: r.away,
-    modelSpreadHome: r.model_spread_home,
-    marketSpreadHome: r.market_spread_home,
-    confidence: r.confidence,
-  }));
-}
-
-export interface FinalGameForBacktest {
-  gameId: number;
-  season: number;
-  week: number;
-  homeTeamId: number;
-  awayTeamId: number;
-  homeScore: number;
-  awayScore: number;
-  openingSpreadHome: number | null;
-  closingSpreadHome: number | null;
-}
-
-/**
- * Every completed game in a season with its opening AND closing spread —
- * the backtest anchors predictions to the opening line (the number that
- * would actually have been available at bet time) and scores them against
- * the closing line, never the other way around, so a backtest can't "know"
- * the closing number before it existed.
- */
-export async function getFinalGamesForBacktest(sport: Sport, season: number): Promise<FinalGameForBacktest[]> {
-  const result = await pool.query<{
-    game_id: number;
-    season: number;
-    week: number;
-    home_team_id: number;
-    away_team_id: number;
-    home_score: number;
-    away_score: number;
-    opening_spread_home: number | null;
-    closing_spread_home: number | null;
-  }>(
-    `SELECT g.id AS game_id, g.season, g.week, g.home_team_id, g.away_team_id, g.home_score, g.away_score,
-            (SELECT os.spread_home FROM odds_snapshots os
-             WHERE os.game_id = g.id AND os.snapshot_type = 'opening' AND os.spread_home IS NOT NULL
-             ORDER BY os.captured_at ASC LIMIT 1) AS opening_spread_home,
-            (SELECT os.spread_home FROM odds_snapshots os
-             WHERE os.game_id = g.id AND os.snapshot_type = 'closing' AND os.spread_home IS NOT NULL
-             ORDER BY os.captured_at DESC LIMIT 1) AS closing_spread_home
-     FROM games g
-     WHERE g.sport = $1 AND g.season = $2 AND g.status = 'final'
-       AND g.home_score IS NOT NULL AND g.away_score IS NOT NULL
-     ORDER BY g.week ASC, g.game_date ASC NULLS LAST, g.id ASC`,
-    [sport, season],
-  );
-  return result.rows.map((r) => ({
-    gameId: r.game_id,
-    season: r.season,
-    week: r.week,
-    homeTeamId: r.home_team_id,
-    awayTeamId: r.away_team_id,
-    homeScore: r.home_score,
-    awayScore: r.away_score,
-    openingSpreadHome: r.opening_spread_home,
-    closingSpreadHome: r.closing_spread_home,
-  }));
-}
-
-export interface CreateBacktestRunInput {
-  name: string;
-  method: string;
-  seasonStart: number;
-  seasonEnd: number;
-  params: Record<string, unknown>;
-}
-
-export async function createBacktestRun(input: CreateBacktestRunInput): Promise<number> {
-  const result = await pool.query<{ id: number }>(
-    `INSERT INTO backtest_runs (name, method, season_start, season_end, params)
-     VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-    [input.name, input.method, input.seasonStart, input.seasonEnd, JSON.stringify(input.params)],
-  );
-  return result.rows[0]!.id;
-}
-
-export interface InsertBacktestResultInput {
-  backtestRunId: number;
-  gameId: number;
-  modelSpreadHome: number;
-  openingSpreadHome: number | null;
-  closingSpreadHome: number;
-  actualMarginHome: number;
-  clv: number | null;
-  covered: boolean | null;
-  beatClose: boolean | null;
-}
-
-export async function insertBacktestResult(input: InsertBacktestResultInput): Promise<void> {
-  await pool.query(
-    `INSERT INTO backtest_results (
-       backtest_run_id, game_id, model_spread_home, opening_spread_home, closing_spread_home,
-       actual_margin_home, clv, covered, beat_close
-     )
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-     ON CONFLICT (backtest_run_id, game_id) DO UPDATE SET
-       model_spread_home = EXCLUDED.model_spread_home, opening_spread_home = EXCLUDED.opening_spread_home,
-       closing_spread_home = EXCLUDED.closing_spread_home, actual_margin_home = EXCLUDED.actual_margin_home,
-       clv = EXCLUDED.clv, covered = EXCLUDED.covered, beat_close = EXCLUDED.beat_close`,
-    [
-      input.backtestRunId,
-      input.gameId,
-      input.modelSpreadHome,
-      input.openingSpreadHome,
-      input.closingSpreadHome,
-      input.actualMarginHome,
-      input.clv,
-      input.covered,
-      input.beatClose,
-    ],
-  );
-}
-
-export interface BacktestRunSummary {
-  id: number;
-  name: string;
-  method: string;
-  sport: Sport | null;
-  seasonStart: number;
-  seasonEnd: number;
-  createdAt: Date;
-}
-
-export async function listBacktestRuns(): Promise<BacktestRunSummary[]> {
-  const result = await pool.query<{
-    id: number;
-    name: string;
-    method: string;
-    sport: Sport | null;
-    season_start: number;
-    season_end: number;
-    created_at: Date;
-  }>(
-    `SELECT br.id, br.name, br.method, br.season_start, br.season_end, br.created_at,
-            (br.params->>'sport') AS sport
-     FROM backtest_runs br
-     ORDER BY br.id DESC`,
-  );
-  return result.rows.map((r) => ({
-    id: r.id,
-    name: r.name,
-    method: r.method,
-    sport: r.sport,
-    seasonStart: r.season_start,
-    seasonEnd: r.season_end,
-    createdAt: r.created_at,
-  }));
 }
 
 export interface GameHistoryRow {
@@ -745,7 +789,7 @@ export interface GameHistoryRow {
   closingSpreadHome: number | null;
 }
 
-/** Every game in a sport/season (any week, any status) with its team names and opening/closing lines — the raw historical-data browser behind /games. */
+/** Every game in a sport/season (any week, any status) with team names and opening/closing lines -- the raw historical-data browser behind /games. */
 export async function getGameHistoryForSeason(sport: Sport, season: number): Promise<GameHistoryRow[]> {
   const result = await pool.query<{
     game_id: number;
@@ -788,42 +832,75 @@ export async function getGameHistoryForSeason(sport: Sport, season: number): Pro
   }));
 }
 
-export async function upsertTeamGameStats(input: UpsertTeamGameStatsInput): Promise<void> {
+export interface PredictionRow {
+  gameId: number;
+  homeTeam: string;
+  awayTeam: string;
+  modelSpreadHome: number;
+  marketSpreadHome: number | null;
+  confidence: number | null;
+}
+
+export async function getPredictionsForWeek(sport: Sport, season: number, week: number): Promise<PredictionRow[]> {
+  const result = await pool.query<{
+    game_id: number;
+    home: string;
+    away: string;
+    model_spread_home: number;
+    market_spread_home: number | null;
+    confidence: number | null;
+  }>(
+    `SELECT DISTINCT ON (g.id) g.id AS game_id, ht.name AS home, at.name AS away,
+            mp.model_spread_home, mp.market_spread_home, mp.confidence
+     FROM model_predictions mp
+     JOIN games g ON g.id = mp.game_id
+     JOIN teams ht ON ht.id = g.home_team_id
+     JOIN teams at ON at.id = g.away_team_id
+     WHERE g.sport = $1 AND g.season = $2 AND g.week = $3 AND mp.method = 'elo'
+     ORDER BY g.id, mp.predicted_at DESC`,
+    [sport, season, week],
+  );
+  return result.rows.map((r) => ({
+    gameId: r.game_id,
+    homeTeam: r.home,
+    awayTeam: r.away,
+    modelSpreadHome: r.model_spread_home,
+    marketSpreadHome: r.market_spread_home,
+    confidence: r.confidence,
+  }));
+}
+
+export interface InsertPublicBettingSplitInput {
+  gameId: number;
+  book: string;
+  capturedAt: string;
+  betPctHome: number | null;
+  betPctAway: number | null;
+  moneyPctHome: number | null;
+  moneyPctAway: number | null;
+  source: string;
+}
+
+/**
+ * Schema-ready, no real source wired up yet — see migration
+ * 0005_public_betting_splits.sql's doc for what was researched and why
+ * nothing was confirmed free/reliable enough to ingest from tonight.
+ */
+export async function insertPublicBettingSplit(input: InsertPublicBettingSplitInput): Promise<void> {
   await pool.query(
-    `INSERT INTO team_game_stats (
-       game_id, team_id, is_home, off_epa_play, off_epa_pass, off_epa_rush,
-       def_epa_play, def_epa_pass, def_epa_rush, off_success_rate,
-       off_success_rate_pass, off_success_rate_rush, def_success_rate,
-       def_success_rate_pass, def_success_rate_rush, plays_offense, plays_defense, source
-     )
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-     ON CONFLICT (game_id, team_id)
-     DO UPDATE SET
-       is_home = EXCLUDED.is_home,
-       off_epa_play = EXCLUDED.off_epa_play, off_epa_pass = EXCLUDED.off_epa_pass, off_epa_rush = EXCLUDED.off_epa_rush,
-       def_epa_play = EXCLUDED.def_epa_play, def_epa_pass = EXCLUDED.def_epa_pass, def_epa_rush = EXCLUDED.def_epa_rush,
-       off_success_rate = EXCLUDED.off_success_rate, off_success_rate_pass = EXCLUDED.off_success_rate_pass,
-       off_success_rate_rush = EXCLUDED.off_success_rate_rush, def_success_rate = EXCLUDED.def_success_rate,
-       def_success_rate_pass = EXCLUDED.def_success_rate_pass, def_success_rate_rush = EXCLUDED.def_success_rate_rush,
-       plays_offense = EXCLUDED.plays_offense, plays_defense = EXCLUDED.plays_defense, source = EXCLUDED.source`,
+    `INSERT INTO public_betting_splits (game_id, book, captured_at, bet_pct_home, bet_pct_away, money_pct_home, money_pct_away, source)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+     ON CONFLICT (game_id, book, captured_at)
+     DO UPDATE SET bet_pct_home = EXCLUDED.bet_pct_home, bet_pct_away = EXCLUDED.bet_pct_away,
+       money_pct_home = EXCLUDED.money_pct_home, money_pct_away = EXCLUDED.money_pct_away`,
     [
       input.gameId,
-      input.teamId,
-      input.isHome,
-      input.offEpaPlay,
-      input.offEpaPass,
-      input.offEpaRush,
-      input.defEpaPlay,
-      input.defEpaPass,
-      input.defEpaRush,
-      input.offSuccessRate,
-      input.offSuccessRatePass,
-      input.offSuccessRateRush,
-      input.defSuccessRate,
-      input.defSuccessRatePass,
-      input.defSuccessRateRush,
-      input.playsOffense,
-      input.playsDefense,
+      input.book,
+      input.capturedAt,
+      input.betPctHome,
+      input.betPctAway,
+      input.moneyPctHome,
+      input.moneyPctAway,
       input.source,
     ],
   );

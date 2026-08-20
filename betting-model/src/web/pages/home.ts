@@ -41,7 +41,7 @@ export function renderHome(runs: BacktestRunSummary[], statsByRun: Map<number, A
       return `<tr>
         <td><a class="run-link" href="/backtest/${run.id}">#${run.id}</a></td>
         <td>${escapeHtml(run.name)}</td>
-        <td>${run.sport ? sportChip(run.sport) : '<span class="muted">—</span>'}</td>
+        <td>${sportChip(run.sport ?? "?")}</td>
         <td class="num">${run.seasonStart}–${run.seasonEnd}</td>
         <td class="num">${(stats?.games ?? 0).toLocaleString()}</td>
         <td class="num">${cover === null ? '<span class="muted">—</span>' : badge(fmtPct(cover), coverTone(cover))}</td>
@@ -54,16 +54,16 @@ export function renderHome(runs: BacktestRunSummary[], statsByRun: Map<number, A
     <h1>Backtest runs</h1>
     <p class="subtitle">Every model run, replayed against real closing lines. Read-only diagnostics — not a picks feed.</p>
     <div class="banner">
-      This is a diagnostics dashboard, not a live-picks app — there is no picks feature
-      in this project, and there won't be one until the backtest shows real signal and
-      it's been reviewed. <strong>Nothing here is a betting recommendation.</strong>
+      This is a diagnostics dashboard, not the live-picks app — Phase 4 (live picks) is
+      still gated until the backtest shows real signal. <strong>Nothing here is a betting
+      recommendation.</strong>
     </div>
     ${headline}
     ${
       runs.length === 0
-        ? `<p class="muted">No backtest runs yet — run <code>npm run backtest:run</code> once you've ingested games/odds and computed ratings.</p>`
+        ? `<p class="muted">No backtest runs yet.</p>`
         : `<table>
-            <thead><tr><th>Run</th><th>Name</th><th>Sport</th><th>Seasons</th><th>Games</th><th>Cover rate (vs. close)</th><th>Run at</th></tr></thead>
+            <thead><tr><th>Run</th><th>Name</th><th>Sport</th><th>Seasons</th><th>Games</th><th>Cover rate</th><th>Run at</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>`
     }

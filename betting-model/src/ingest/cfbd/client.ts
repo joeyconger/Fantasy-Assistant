@@ -42,10 +42,31 @@ export interface CfbdGame {
   awayId: number;
   awayTeam: string;
   awayPoints: number | null;
+  venueId: number | null;
 }
 
 export function getGames(year: number, seasonType: "regular" | "postseason" = "regular"): Promise<CfbdGame[]> {
   return cfbdGet<CfbdGame[]>("/games", { year, seasonType, division: "fbs" });
+}
+
+export interface CfbdVenue {
+  id: number;
+  name: string;
+  latitude: number | null;
+  longitude: number | null;
+  dome: boolean | null;
+}
+
+/**
+ * Verified field names against CFBD's own Python client docs (id, name,
+ * latitude, longitude, dome) — not yet checked against a real live
+ * response from this sandbox (collegefootballdata.com is blocked here,
+ * same as CFBD's other endpoints). No team-linking field on Venue itself;
+ * join via CfbdGame.venueId instead, which correctly handles neutral-site
+ * games too (a team-to-home-stadium map, the approach used for NFL, can't).
+ */
+export function getVenues(): Promise<CfbdVenue[]> {
+  return cfbdGet<CfbdVenue[]>("/venues", {});
 }
 
 interface CfbdAdvancedSplit {
@@ -76,4 +97,82 @@ export function getGameAdvancedStats(
   seasonType: "regular" | "postseason" = "regular",
 ): Promise<CfbdGameAdvancedStats[]> {
   return cfbdGet<CfbdGameAdvancedStats[]>("/stats/game/advanced", { year, week, seasonType });
+}
+
+// Verified against a real CFBD response — field names and spread sign
+// convention (positive = away favored, negative = home favored, same as
+// this project's schema) confirmed correct via 2024 season data checked
+// against known game outcomes. See syncHistoricalOdds.ts for details.
+export interface CfbdLineEntry {
+  provider: string;
+  spread: number | null;
+  spreadOpen: number | null;
+  overUnder: number | null;
+  overUnderOpen: number | null;
+  homeMoneyline: number | null;
+  awayMoneyline: number | null;
+}
+
+export interface CfbdGameLines {
+  id: number;
+  season: number;
+  week: number;
+  homeTeam: string;
+  awayTeam: string;
+  lines: CfbdLineEntry[];
+}
+
+export function getLines(
+  year: number,
+  seasonType: "regular" | "postseason" = "regular",
+): Promise<CfbdGameLines[]> {
+  return cfbdGet<CfbdGameLines[]>("/lines", { year, seasonType });
+}
+
+export interface CfbdTeamSp {
+  year: number;
+  team: string;
+  conference: string | null;
+  rating: number | null;
+}
+
+/**
+ * CFBD's /ratings/sp takes no week param — one value per team per year, not
+ * a time series. Real risk: Connelly's SP+ methodology blends a genuine
+ * preseason projection (recruiting, returning production, coaching changes)
+ * into the in-season number and phases it out week by week, but this
+ * endpoint gives no way to tell which point in that blend a given year's
+ * value reflects — most likely the final, fully-season-informed number.
+ * Only safe use found so far: season Y-1's value as season Y's rating
+ * prior (no lookahead risk either way, since Y-1 is fully complete before Y
+ * starts) — see ratings/elo.ts's computeInitialRating. UNVERIFIED against a
+ * real response; check ingested values are in a plausible range (roughly
+ * -30 to +30) before trusting.
+ */
+export function getSpRatings(year: number): Promise<CfbdTeamSp[]> {
+  return cfbdGet<CfbdTeamSp[]>("/ratings/sp", { year });
+}
+
+export interface CfbdTeamElo {
+  year: number;
+  team: string;
+  conference: string | null;
+  elo: number | null;
+}
+
+/**
+ * CFBD's own Elo system, unlike SP+ this does take a week param and is a
+ * real time series — the only CFBD rating source that can give an
+ * as-of-a-specific-week snapshot. UNVERIFIED: exact max week per season
+ * (postseason inclusive?) and whether early/preseason weeks return data at
+ * all haven't been confirmed against a real response — syncExternalRatings
+ * loops a generous week range and treats empty results as "not available
+ * that week" rather than an error.
+ */
+export function getEloRatings(
+  year: number,
+  week: number,
+  seasonType: "regular" | "postseason" = "regular",
+): Promise<CfbdTeamElo[]> {
+  return cfbdGet<CfbdTeamElo[]>("/ratings/elo", { year, week, seasonType });
 }

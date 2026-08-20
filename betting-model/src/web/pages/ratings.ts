@@ -61,7 +61,7 @@ export function renderRatingsPage(
     ratings === null
       ? ""
       : ratings.length === 0
-        ? `<p class="muted">No ratings computed for ${escapeHtml(sport)} ${escapeHtml(season)} through week ${escapeHtml(week)} yet — run <code>npm run ratings:compute -- --sport ${escapeHtml(sport)} --season ${escapeHtml(season)}</code> first.</p>`
+        ? `<p class="muted">No ratings computed for ${escapeHtml(sport)} ${escapeHtml(season)} through week ${escapeHtml(week)} yet — run <code>npm run ratings:compute</code> for it first.</p>`
         : `<table>
             <thead><tr><th>#</th><th>Team</th><th class="num">Rating</th><th>Power rating</th><th class="num">± error</th></tr></thead>
             <tbody>${ratings
@@ -122,7 +122,7 @@ export function renderPredictionsPage(
     withDeviation === null
       ? ""
       : withDeviation.length === 0
-        ? `<p class="muted">No predictions generated for ${escapeHtml(sport)} ${escapeHtml(season)} week ${escapeHtml(week)} yet — run <code>npm run ratings:predict -- --sport ${escapeHtml(sport)} --season ${escapeHtml(season)} --week ${escapeHtml(week)}</code> first.</p>`
+        ? `<p class="muted">No predictions generated for ${escapeHtml(sport)} ${escapeHtml(season)} week ${escapeHtml(week)} yet — run <code>npm run ratings:predict</code> for it first.</p>`
         : `<table>
             <thead><tr><th>Matchup</th><th class="num">Model line (home)</th><th class="num">Market line (home)</th><th class="num">Deviation</th><th class="num">Confidence (±pts)</th></tr></thead>
             <tbody>${withDeviation

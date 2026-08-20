@@ -1,99 +1,124 @@
-import { paramsForSport } from "../ratings/config.js";
-import { predictSpread } from "../ratings/elo.js";
-import type { RatingParams } from "../ratings/elo.js";
-import { determinePickSide, computeCovered, computeClv } from "./clv.js";
 import {
-  getFinalGamesForBacktest,
-  getTeamRatingBeforeWeek,
-  getGamesPlayedCount,
-  createBacktestRun,
+  getDistinctWeeks,
+  getFinalGamesForWeek,
+  getOpeningLine,
+  getClosingLine,
+  getLatestPrediction,
+  insertBacktestRun,
   insertBacktestResult,
 } from "../db/repo.js";
 import type { Sport } from "../db/repo.js";
+import { generateBacktestPredictionsForWeek } from "../ratings/service.js";
+import type { RatingParams } from "../ratings/config.js";
+import { computeClv, computeCovered, pickSideFromDeviation } from "./clv.js";
+
+const METHOD = "elo" as const;
 
 export interface BacktestParams {
+  name: string;
   sport: Sport;
   seasonStart: number;
   seasonEnd: number;
-  name: string;
+  /** Overrides ratings/config.ts's defaults for this run — see backtest/sweep.ts. */
+  paramsOverride?: RatingParams;
   /**
-   * Only affects prediction-time params (homeFieldAdvantage,
-   * marketShrinkageK, baseErrorPoints) — team_ratings itself must already
-   * have been computed with matching sosWeight/performanceWeight/
-   * seasonCarryover for a sweep over THOSE params to mean anything (see
-   * backtest/sweep.ts). Passing a different value here without
-   * recomputing ratings first silently sweeps nothing for those three.
+   * Skip weeks >= this number entirely (no prediction, no scoring) — e.g.
+   * excluding CFB's week 14+ (rivalry week / conference championships;
+   * this project has never ingested true postseason/bowl games, see
+   * README "Segment breakdowns"). Doesn't affect predictions for earlier,
+   * included weeks (those only ever look at prior weeks). Does mean the
+   * "final" rating stored for a season stops at the last included week,
+   * not the true end of season — a minor, consistent side effect of
+   * treating the excluded weeks as untrusted for carryover into the next
+   * season too, not just for betting on directly.
    */
-  ratingParams?: RatingParams;
+  excludeFromWeek?: number;
 }
 
-export interface RunBacktestResult {
+export interface BacktestSummary {
   backtestRunId: number;
-  gamesScored: number;
-  gamesSkippedNoOdds: number;
+  scored: number;
+  skippedNoOdds: number;
 }
 
 /**
- * Replays every completed game in [seasonStart, seasonEnd], predicting each
- * one from the rating the team actually had before that week (via
- * getTeamRatingBeforeWeek — same as a live prediction would have seen,
- * team_ratings must already be computed for these seasons) and anchoring
- * to the OPENING line, then scoring the pick against the CLOSING line. A
- * game with no opening or closing line on file is skipped, not zero-filled
- * — silently treating "no odds ingested" as "no edge" would bias the
- * results.
+ * Replays the rating model week by week across [seasonStart, seasonEnd],
+ * predicting each week from an opening-line anchor when one exists (never
+ * leaking the closing line or that week's own results — see
+ * generateBacktestPredictionsForWeek), then scores every completed game
+ * against its real line(s) and actual result.
+ *
+ * An opening line is the exception, not the rule, in the data this project
+ * has free access to (nflverse's historical odds are closing-only, back to
+ * 1999; only SBR's older 2019-21 seasons have both — see README "Odds
+ * data"). So this treats the closing line as the required minimum and the
+ * opening line as optional:
+ *   - Both exist: real CLV is computed (computeClv), and the pick side
+ *     comes from the model's deviation from the OPENING line.
+ *   - Only closing exists: clv is left null (there's no bet price to
+ *     compare against), and the pick side instead comes from the model's
+ *     deviation from the CLOSING line — `covered` (did that pick actually
+ *     beat the closing number, using the real final score) becomes the
+ *     primary signal-quality metric for these games, which needs no
+ *     opening line at all.
+ * A game with no closing line either is skipped outright — there's nothing
+ * to score it against.
  */
-export async function runBacktest(input: BacktestParams): Promise<RunBacktestResult> {
-  const params = input.ratingParams ?? paramsForSport(input.sport);
-  const backtestRunId = await createBacktestRun({
+export async function runBacktest(input: BacktestParams): Promise<BacktestSummary> {
+  const backtestRunId = await insertBacktestRun({
     name: input.name,
-    method: "elo",
+    method: METHOD,
     seasonStart: input.seasonStart,
     seasonEnd: input.seasonEnd,
-    params: { sport: input.sport, ...params },
+    params: { sport: input.sport, ratingParams: input.paramsOverride },
   });
 
-  let gamesScored = 0;
-  let gamesSkippedNoOdds = 0;
+  let scored = 0;
+  let skippedNoOdds = 0;
 
-  for (let season = input.seasonStart; season <= input.seasonEnd; season += 1) {
-    const games = await getFinalGamesForBacktest(input.sport, season);
-    for (const game of games) {
-      if (game.openingSpreadHome === null || game.closingSpreadHome === null) {
-        gamesSkippedNoOdds += 1;
-        continue;
+  for (let season = input.seasonStart; season <= input.seasonEnd; season++) {
+    const weeks = await getDistinctWeeks(input.sport, season);
+    for (const week of weeks) {
+      if (input.excludeFromWeek !== undefined && week >= input.excludeFromWeek) continue;
+      await generateBacktestPredictionsForWeek(input.sport, season, week, input.paramsOverride);
+      const games = await getFinalGamesForWeek(input.sport, season, week);
+
+      for (const game of games) {
+        const prediction = await getLatestPrediction(game.id, METHOD);
+        const openingSpreadHome = (await getOpeningLine(game.id)) ?? null;
+        const closingSpreadHome = await getClosingLine(game.id);
+
+        if (prediction === undefined || closingSpreadHome === undefined) {
+          skippedNoOdds += 1;
+          continue;
+        }
+        const { modelSpreadHome, confidence } = prediction;
+
+        const actualMarginHome = game.homeScore - game.awayScore;
+
+        const { pickSide, clv } =
+          openingSpreadHome !== null
+            ? computeClv({ modelSpreadHome, openingSpreadHome, closingSpreadHome })
+            : { ...pickSideFromDeviation(modelSpreadHome, closingSpreadHome), clv: null };
+
+        const covered = computeCovered(pickSide, actualMarginHome, closingSpreadHome);
+
+        await insertBacktestResult({
+          backtestRunId,
+          gameId: game.id,
+          modelSpreadHome,
+          openingSpreadHome,
+          closingSpreadHome,
+          actualMarginHome,
+          clv,
+          covered,
+          beatClose: clv === null ? null : clv > 0,
+          confidence,
+        });
+        scored += 1;
       }
-
-      const [homeRating, awayRating, homeGamesPlayed, awayGamesPlayed] = await Promise.all([
-        getTeamRatingBeforeWeek(game.homeTeamId, input.sport, season, game.week),
-        getTeamRatingBeforeWeek(game.awayTeamId, input.sport, season, game.week),
-        getGamesPlayedCount(game.homeTeamId, input.sport, season, game.week - 1),
-        getGamesPlayedCount(game.awayTeamId, input.sport, season, game.week - 1),
-      ]);
-      const prediction = predictSpread(
-        { homeRating, awayRating, homeGamesPlayed, awayGamesPlayed, marketSpreadHome: game.openingSpreadHome },
-        params,
-      );
-
-      const actualMarginHome = game.homeScore - game.awayScore;
-      const pickSide = determinePickSide(prediction.modelSpreadHome, game.openingSpreadHome);
-      const covered = pickSide ? computeCovered(pickSide, game.closingSpreadHome, actualMarginHome) : null;
-      const clv = pickSide ? computeClv(pickSide, game.openingSpreadHome, game.closingSpreadHome) : null;
-
-      await insertBacktestResult({
-        backtestRunId,
-        gameId: game.gameId,
-        modelSpreadHome: prediction.modelSpreadHome,
-        openingSpreadHome: game.openingSpreadHome,
-        closingSpreadHome: game.closingSpreadHome,
-        actualMarginHome,
-        clv,
-        covered,
-        beatClose: clv === null ? null : clv > 0,
-      });
-      gamesScored += 1;
     }
   }
 
-  return { backtestRunId, gamesScored, gamesSkippedNoOdds };
+  return { backtestRunId, scored, skippedNoOdds };
 }

@@ -15,20 +15,36 @@ import {
   getRatingHistoryForTeam,
 } from "./db/repo.js";
 import type { Sport } from "./db/repo.js";
-import { getOverallReport, getOpeningCoverRate, getThresholdReport, getSeasonReport } from "./backtest/report.js";
+import {
+  getOverallReport,
+  getOverallStatsByRun,
+  getOpeningCoverRate,
+  getThresholdReport,
+  getConfidenceReport,
+  getSportSeasonReport,
+  getConferenceReport,
+  getInOutConferenceReport,
+  getWeekBucketReport,
+  getHomeRoadBySpreadSizeReport,
+  getHomeRoadByDeviationReport,
+  getKeyNumberReport,
+  getWeatherReport,
+  getPrecipitationReport,
+} from "./backtest/report.js";
 import { listJobs, getJob, JOB_STARTERS } from "./adminJobs.js";
-import { config } from "./config.js";
 
 // A read-only diagnostics surface: backtest reports, team ratings, and raw
-// model predictions vs. market lines. NOT a live-picks app — nothing here
-// is framed as a recommendation. HTML routes require HTTP Basic auth
-// (DASHBOARD_USER/DASHBOARD_PASSWORD); /query and /admin/jobs use their
-// own bearer-token auth (ADMIN_TOKEN) for API-style access.
+// model predictions vs. market lines. NOT the live-picks app (still
+// gated — see README Phase 4 status); nothing here is framed as a
+// recommendation. HTML routes require HTTP Basic auth (DASHBOARD_USER/
+// DASHBOARD_PASSWORD, same shape as the other Railway app in this repo's
+// history); /query keeps its own bearer-token auth for API-style access.
 const PORT = process.env.PORT ?? "3000";
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
 
-function isAdminAuthorized(authHeader: string | undefined): boolean {
-  if (!config.adminToken) return false;
-  return authHeader === `Bearer ${config.adminToken}`;
+function isQueryAuthorized(authHeader: string | undefined): boolean {
+  if (!ADMIN_TOKEN) return false;
+  return authHeader === `Bearer ${ADMIN_TOKEN}`;
 }
 
 function readBody(req: import("node:http").IncomingMessage): Promise<string> {
@@ -79,7 +95,7 @@ async function handleRequest(
   }
 
   if (req.method === "POST" && url.pathname === "/query") {
-    if (!isAdminAuthorized(req.headers.authorization)) {
+    if (!isQueryAuthorized(req.headers.authorization)) {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "unauthorized" }));
       return;
@@ -102,11 +118,11 @@ async function handleRequest(
     return;
   }
 
-  // Background job triggers — for anything too slow to run inside a
-  // request without risking a platform healthcheck timeout (ingestion,
-  // rating computation, backtests). Pass params as a JSON body.
+  // Background job triggers — for anything too slow to run inside
+  // startCommand without risking the deploy healthcheck (see adminJobs.ts).
+  // Same bearer-token auth as /query.
   if (req.method === "POST" && /^\/admin\/jobs\/[\w-]+$/.test(url.pathname)) {
-    if (!isAdminAuthorized(req.headers.authorization)) {
+    if (!isQueryAuthorized(req.headers.authorization)) {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "unauthorized" }));
       return;
@@ -118,28 +134,14 @@ async function handleRequest(
       res.end(JSON.stringify({ error: `unknown job: ${name}`, available: Object.keys(JOB_STARTERS) }));
       return;
     }
-    let params: Record<string, unknown> = {};
-    try {
-      const raw = await readBody(req);
-      params = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
-    } catch {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "invalid JSON body" }));
-      return;
-    }
-    try {
-      const job = starter(params);
-      res.writeHead(202, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ started: job.id }));
-    } catch (err) {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: (err as Error).message }));
-    }
+    const job = await starter();
+    res.writeHead(202, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ started: job.id }));
     return;
   }
 
   if (req.method === "GET" && url.pathname === "/admin/jobs") {
-    if (!isAdminAuthorized(req.headers.authorization)) {
+    if (!isQueryAuthorized(req.headers.authorization)) {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "unauthorized" }));
       return;
@@ -150,7 +152,7 @@ async function handleRequest(
   }
 
   if (req.method === "GET" && /^\/admin\/jobs\/[\w-]+$/.test(url.pathname)) {
-    if (!isAdminAuthorized(req.headers.authorization)) {
+    if (!isQueryAuthorized(req.headers.authorization)) {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "unauthorized" }));
       return;
@@ -173,8 +175,7 @@ async function handleRequest(
   }
 
   if (req.method === "GET" && url.pathname === "/") {
-    const runs = await listBacktestRuns();
-    const statsByRun = new Map(await Promise.all(runs.map(async (r) => [r.id, await getOverallReport(r.id)] as const)));
+    const [runs, statsByRun] = await Promise.all([listBacktestRuns(), getOverallStatsByRun()]);
     html(res, renderHome(runs, statsByRun));
     return;
   }
@@ -188,13 +189,49 @@ async function handleRequest(
       res.end("backtest run not found");
       return;
     }
-    const [overall, openingCover, thresholds, seasons] = await Promise.all([
+    const isCfb = run.sport === "cfb";
+    const [
+      overall,
+      openingCover,
+      thresholds,
+      confidence,
+      bySeasonSport,
+      keyNumbers,
+      weather,
+      precipitation,
+      conference,
+      inOutConference,
+      weekBucket,
+      homeRoadSpread,
+      homeRoadDeviation,
+    ] = await Promise.all([
       getOverallReport(runId),
       getOpeningCoverRate(runId),
       getThresholdReport(runId),
-      getSeasonReport(runId),
+      getConfidenceReport(runId),
+      getSportSeasonReport(runId),
+      getKeyNumberReport(runId),
+      getWeatherReport(runId),
+      getPrecipitationReport(runId),
+      isCfb ? getConferenceReport(runId) : Promise.resolve([]),
+      isCfb ? getInOutConferenceReport(runId) : Promise.resolve([]),
+      isCfb ? getWeekBucketReport(runId) : Promise.resolve([]),
+      isCfb ? getHomeRoadBySpreadSizeReport(runId) : Promise.resolve([]),
+      isCfb ? getHomeRoadByDeviationReport(runId) : Promise.resolve([]),
     ]);
-    html(res, renderBacktestReport(run, overall, openingCover, thresholds, seasons));
+    html(
+      res,
+      renderBacktestReport(run, overall, openingCover, thresholds, confidence, bySeasonSport, {
+        keyNumbers,
+        weather,
+        precipitation,
+        conference,
+        inOutConference,
+        weekBucket,
+        homeRoadSpread,
+        homeRoadDeviation,
+      }),
+    );
     return;
   }
 
