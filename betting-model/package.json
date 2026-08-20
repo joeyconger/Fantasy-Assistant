@@ -22,6 +22,7 @@
     "backtest:run": "tsx src/backtest/index.ts run",
     "serve": "tsx src/server.ts",
     "typecheck": "tsc --noEmit",
+    "test": "tsx --test src/**/*.test.ts",
     "build": "tsc"
   },
   "dependencies": {
