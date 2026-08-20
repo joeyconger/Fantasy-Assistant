@@ -1,6 +1,23 @@
 -- Core schema for Phase 1 (league sync). Later phases add tables for
 -- market values, sentiment, devy prospects, etc. as those features land.
 
+-- Which leagues to sync + per-league settings (my_owner_id, format
+-- override, ESPN season) — the DB-backed successor to config/leagues.yaml.
+-- Editable live from the web Settings page (see league_sources.py) and,
+-- unlike the YAML file, persists across a Railway redeploy since it lives
+-- on the same DB Volume as everything else (Railway re-clones the repo
+-- from git on deploy, which would silently wipe any on-disk YAML edits).
+-- config/leagues.yaml is only read once, to migrate an existing local
+-- setup in the first time this table is empty.
+CREATE TABLE IF NOT EXISTS league_sources (
+    league_id TEXT PRIMARY KEY,
+    platform TEXT NOT NULL,          -- 'sleeper' | 'espn'
+    format_override TEXT,            -- NULL | 'redraft' | 'dynasty' | 'devy'
+    my_owner_id TEXT,
+    espn_season INTEGER,             -- only meaningful for platform='espn'
+    added_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS leagues (
     league_id TEXT PRIMARY KEY,
     platform TEXT NOT NULL,          -- 'sleeper' | 'espn'

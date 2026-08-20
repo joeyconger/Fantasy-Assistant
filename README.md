@@ -28,6 +28,7 @@ Railway) as a small shared web dashboard with a Sleeper/ESPN-app-style design
 | X/Twitter | 🚫 **Skipped, deliberately.** See "Why X/Twitter was skipped" below. |
 | Buy-low/sell-high engine | ⚠️ Combines the above signals correctly (verified via synthetic data + now real KTC + FantasyPros data). Still needs weekly-points data to say anything for a given league — no games played yet this season. |
 | Devy watchlist | ✅ Fully built and tested (it's just a manual list — no external dependency), and now cross-references real KTC devy values |
+| Settings page (add/edit/remove leagues, DB-backed config) | ✅ **Verified live** — full add/update/remove flow smoke-tested against a real running server, owner dropdown confirmed populated from synced data |
 
 **Bottom line**: every data source except X/Twitter (skipped) and Reddit
 (re-enabled via Apify, not yet live-verified) is verified live — Sleeper,
@@ -228,7 +229,7 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-139 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
+167 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
 the private-league auth path, the players table's platform-scoped primary
 key (prevents Sleeper/ESPN ID collisions), cross-platform name matching
 (suffixes, punctuation, ambiguous-duplicate handling), the rank-inefficiency
@@ -238,8 +239,10 @@ buy-low/sell-high flag logic, KTC/FantasyPros/FFC parser strategies against
 synthetic HTML/JSON, the Apify-based Reddit client's defensive field
 extraction, lexicon-based sentiment scoring, the devy watchlist,
 roster-needs gap analysis, the trade analyzer, the design-system component
-helpers (XSS-escaping), and the web dashboard (auth gating, XSS-escaping,
-missing-env-var fail-fast).
+helpers (XSS-escaping), the web dashboard (auth gating, XSS-escaping,
+missing-env-var fail-fast), and the `league_sources` DB-backed config store
+plus the web Settings page (CRUD, YAML migration, owner dropdown, form
+error handling).
 
 What tests can't cover: whether the *real* KTC/FantasyPros pages, FFC's ADP
 API, or Apify's Reddit Scraper actor match the shapes the parsers assume.
@@ -256,6 +259,9 @@ fantasy-assistant sync-fantasypros
 fantasy-assistant sync-ffc-adp --qb-mode 1qb        # or --qb-mode superflex; real ADP for the draft board
 fantasy-assistant sync-reddit       # needs APIFY_API_TOKEN; see "Reddit sentiment via Apify" for subreddit/flair defaults
 
+fantasy-assistant list-leagues                                    # leagues currently configured to sync
+fantasy-assistant add-league LEAGUE_ID --platform sleeper --format dynasty --my-owner-id u1
+fantasy-assistant remove-league LEAGUE_ID                          # stops syncing it; keeps already-synced data
 fantasy-assistant standings 1389373095143284736
 fantasy-assistant owners 1389373095143284736                      # find your owner_id for personalization
 fantasy-assistant draft-board                                    # market ADP (FFC) vs ESPN rank divergence
@@ -272,15 +278,18 @@ fantasy-assistant devy-remove 1
 Full command list: `fantasy-assistant --help`.
 
 **Personalization**: waiver-targets/trade-targets/buy-sell are league-wide
-by default (useful, but you have to judge fit yourself). Run
-`fantasy-assistant owners LEAGUE_ID` to find your `owner_id`, set it as
-`my_owner_id` in `config/leagues.yaml` for that league, and: trade-targets
-excludes players you already own, both commands tag candidates that fill
-one of your roster's actual weak positions (`analysis/roster_needs.py` —
-compares your average rank per position against the league average), and
-buy-sell tags whether each flagged player is on your roster (an actual
-sell-high decision) or someone else's (a trade-for target). Leave it unset
-and everything still works exactly as before, unpersonalized.
+by default (useful, but you have to judge fit yourself). Set your
+`owner_id` for a league from the web Settings page (`/settings` — pick your
+team from a dropdown once that league has been synced at least once), or via
+`fantasy-assistant owners LEAGUE_ID` to find it and `fantasy-assistant
+add-league --my-owner-id` when first adding a league (see "Settings" below)
+— and: trade-targets excludes players you already own, both commands tag
+candidates that fill one of your roster's actual weak positions
+(`analysis/roster_needs.py` — compares your average rank per position
+against the league average), and buy-sell tags whether each flagged player
+is on your roster (an actual sell-high decision) or someone else's (a
+trade-for target). Leave it unset and everything still works exactly as
+before, unpersonalized.
 
 **Trade analyzer**: evaluates a proposed trade using KTC value (dynasty/devy,
 auto-detects 1QB/Superflex from the league) or FantasyPros rank (redraft).
@@ -429,13 +438,47 @@ redo it, or want to point a fresh Railway project at this repo.
    `ESPN_SWID`, `ESPN_S2`, and (once you set it up) `APIFY_API_TOKEN`.
 4. **Networking → Generate Domain**.
 
-Web dashboard pages: `/` (priorities + standings + Sync Now), then
+Web dashboard pages: `/` (priorities + standings + Sync Now), `/settings`
+(add/edit/remove leagues — see "Settings" below), then
 `/league/{league_id}` for each league's hub, with `/league/{league_id}/draft-board`,
 `/waivers`, `/buy-sell`, `/trade-analyzer`, and (devy league only) `/devy`
 underneath it — see "Phase C" above. All behind the shared login. The devy
 watchlist is view-only on the web — add/remove prospects via the CLI
 (`devy-add`/`devy-remove`) since that's a
 local/one-time action, not something that needed a web form yet.
+
+## Settings
+
+`/settings` is the live web page for managing which leagues get synced and
+their per-league settings — no more manually editing `config/leagues.yaml`
+and redeploying. It replaced that file as the actual source of truth: which
+leagues to sync, their format override, `my_owner_id`, and (for the one
+ESPN league) its season now all live in a `league_sources` DB table instead.
+
+**Why the DB instead of the YAML file**: Railway re-clones this repo from
+git on every deploy, which would silently wipe any hand-edited
+`config/leagues.yaml` changes. `league_sources` lives on the same
+persistent Volume as everything else already synced, so Settings changes
+survive redeploys the same way synced league/roster data does.
+
+**What you can do from `/settings`**:
+- Add a league (Sleeper or ESPN — only one ESPN league is supported at a
+  time), with an optional format override and `my_owner_id`.
+- Edit an existing league's format override, `my_owner_id` (a dropdown once
+  that league has been synced at least once, otherwise a plain text field —
+  same `owner_id` lookup `fantasy-assistant owners` always did, just without
+  the copy-paste round trip), and ESPN season.
+- Remove a league, which stops future syncs but does **not** delete
+  already-synced data (rosters/standings/etc.) for it.
+
+**One-time migration**: the first time `league_sources` is empty (e.g. an
+existing local setup, or the first deploy after this feature shipped), it's
+auto-populated from `config/leagues.yaml` if that file exists. After that,
+the YAML file is never read again — Settings (or the `add-league`/
+`remove-league` CLI commands) is the only way leagues get added or removed.
+ESPN cookies (`ESPN_SWID`/`ESPN_S2`) still come from env vars/
+`config/secrets.yaml` only, never the DB — that credential boundary is
+unchanged.
 
 ## Data model notes
 
@@ -473,14 +516,15 @@ local/one-time action, not something that needed a web form yet.
 railway.json                 # Railway build/start command config
 .env.example                  # env vars the web dashboard/CLI can use
 config/
-  leagues.yaml               # league IDs, formats, ESPN season
+  leagues.yaml               # one-time migration input only, see league_sources.py
   secrets.yaml.example        # template for ESPN cookies (local use only)
 src/fantasy_assistant/
   cli.py                      # all CLI commands
-  web.py                       # FastAPI dashboard
+  web.py                       # FastAPI dashboard (incl. /settings)
   web_components.py            # design system: CSS tokens + HTML component helpers
   devy.py                       # devy watchlist CRUD
-  config.py                   # config/leagues.yaml + secrets.yaml/env loading
+  config.py                   # config/leagues.yaml + secrets.yaml/env loading (migration-only now)
+  league_sources.py            # league_sources DB table CRUD + YAML migration — live config source
   db.py                        # SQLite connection/init
   schema.sql                    # all table definitions, heavily commented
   analysis/                   # cross-cutting logic (not platform-specific)

@@ -1,4 +1,14 @@
-"""Loads config/leagues.yaml and (optionally) config/secrets.yaml."""
+"""Loads config/leagues.yaml and (optionally) config/secrets.yaml.
+
+As of the Settings feature, config/leagues.yaml is no longer the live
+source of truth for which leagues to sync — that's league_sources.py's
+`league_sources` DB table now, editable from the web Settings page.
+`load_config_from_yaml()` here is kept for one thing only: migrating an
+existing local YAML setup into the DB the first time league_sources is
+empty (see league_sources.migrate_yaml_if_needed()). Everyday code should
+call `league_sources.load_config(conn)`, not this module's function,
+directly.
+"""
 
 from __future__ import annotations
 
@@ -37,7 +47,7 @@ class AppConfig:
     espn_league: EspnLeagueConfig | None
 
 
-def load_config(path: Path = DEFAULT_CONFIG_PATH, secrets_path: Path = DEFAULT_SECRETS_PATH) -> AppConfig:
+def load_config_from_yaml(path: Path = DEFAULT_CONFIG_PATH, secrets_path: Path = DEFAULT_SECRETS_PATH) -> AppConfig:
     if not path.exists():
         raise FileNotFoundError(
             f"No config file at {path}. Copy config/leagues.yaml and fill in your league IDs."

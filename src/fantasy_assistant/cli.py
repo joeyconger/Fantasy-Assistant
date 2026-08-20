@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import click
 
-from . import config as config_module
 from . import db as db_module
+from . import league_sources
 from .analysis.buy_low_sell_high import find_buy_low_sell_high
 from .analysis.draft_board import find_rank_inefficiencies
 from .analysis.trade_analyzer import TradeAnalyzerError, analyze_trade
@@ -25,12 +25,9 @@ from .platforms.sleeper.sync import sync_league, sync_players
 from .platforms.sleeper.weekly_points import current_completed_weeks, sync_weekly_points
 
 
-def _my_owner_id_for(league_id: str) -> str | None:
-    """Looks up my_owner_id for a league from config/leagues.yaml, if configured."""
-    try:
-        app_config = config_module.load_config()
-    except FileNotFoundError:
-        return None
+def _my_owner_id_for(conn, league_id: str) -> str | None:
+    """Looks up my_owner_id for a league from league_sources, if set."""
+    app_config = league_sources.load_config(conn)
     for league_cfg in app_config.sleeper_leagues:
         if league_cfg.league_id == league_id:
             return league_cfg.my_owner_id
@@ -90,16 +87,13 @@ def sync_espn_cmd():
     conn = db_module.get_connection()
     db_module.init_db(conn)
 
-    try:
-        app_config = config_module.load_config()
-    except FileNotFoundError as exc:
-        raise click.ClickException(str(exc))
+    app_config = league_sources.load_config(conn)
 
     if not app_config.espn_league:
-        raise click.ClickException("No ESPN league configured in config/leagues.yaml.")
+        raise click.ClickException("No ESPN league configured — add one via the web Settings page or `fantasy-assistant add-league`.")
     espn_cfg = app_config.espn_league
     if not espn_cfg.season:
-        raise click.ClickException("Set espn.season in config/leagues.yaml before syncing.")
+        raise click.ClickException("Set the ESPN league's season via the web Settings page before syncing.")
 
     client = ESPNClient(swid=espn_cfg.swid, espn_s2=espn_cfg.espn_s2)
     try:
@@ -113,15 +107,12 @@ def sync_espn_cmd():
 
 @cli.command("sync-all")
 def sync_all_cmd():
-    """Sync players plus every Sleeper league listed in config/leagues.yaml, and ESPN if configured."""
+    """Sync players plus every tracked league (see list-leagues / the web Settings page)."""
     conn = db_module.get_connection()
     db_module.init_db(conn)
     client = SleeperClient()
 
-    try:
-        app_config = config_module.load_config()
-    except FileNotFoundError as exc:
-        raise click.ClickException(str(exc))
+    app_config = league_sources.load_config(conn)
 
     try:
         count = sync_players(conn, client)
@@ -129,7 +120,7 @@ def sync_all_cmd():
 
         for league_cfg in app_config.sleeper_leagues:
             result = sync_league(conn, client, league_cfg.league_id, format_override=league_cfg.format)
-            note = "" if league_cfg.format else "  (auto-detected — set format: in config/leagues.yaml to override, e.g. for devy)"
+            note = "" if league_cfg.format else "  (auto-detected — set a format override via add-league/Settings to change, e.g. for devy)"
             click.echo(f"League: synced '{result['name']}' ({result['league_id']}) — format: {result['format']}{note}")
     except SleeperAPIError as exc:
         raise click.ClickException(str(exc))
@@ -137,7 +128,7 @@ def sync_all_cmd():
     if app_config.espn_league:
         espn_cfg = app_config.espn_league
         if not espn_cfg.season:
-            click.echo("ESPN league configured but no season set in config/leagues.yaml — skipped.")
+            click.echo("ESPN league configured but no season set — skipped.")
         else:
             espn_client = ESPNClient(swid=espn_cfg.swid, espn_s2=espn_cfg.espn_s2)
             try:
@@ -168,10 +159,7 @@ def sync_rankings_cmd():
     except SleeperAPIError as exc:
         raise click.ClickException(str(exc))
 
-    try:
-        app_config = config_module.load_config()
-    except FileNotFoundError as exc:
-        raise click.ClickException(str(exc))
+    app_config = league_sources.load_config(conn)
 
     if not app_config.espn_league or not app_config.espn_league.season:
         click.echo("ESPN rankings: no ESPN league/season configured — skipped.")
@@ -242,7 +230,7 @@ def sync_weekly_points_cmd(league_id: str, weeks: int):
 def waiver_targets_cmd(league_id: str, limit: int):
     """Show available (unrostered) players trending up recently."""
     conn = db_module.get_connection()
-    my_owner_id = _my_owner_id_for(league_id)
+    my_owner_id = _my_owner_id_for(conn, league_id)
     try:
         results = top_waiver_adds(conn, league_id, limit=limit, my_owner_id=my_owner_id)
     except ValueError as exc:
@@ -267,7 +255,7 @@ def waiver_targets_cmd(league_id: str, limit: int):
 def trade_targets_cmd(league_id: str, limit: int):
     """Show rostered players trending up — possible buy-before-price-catches-up trade targets."""
     conn = db_module.get_connection()
-    my_owner_id = _my_owner_id_for(league_id)
+    my_owner_id = _my_owner_id_for(conn, league_id)
     try:
         results = top_trade_targets(conn, league_id, limit=limit, my_owner_id=my_owner_id)
     except ValueError as exc:
@@ -418,7 +406,7 @@ def buy_sell_cmd(league_id: str, limit: int):
     if not league:
         raise click.ClickException(f"League {league_id} hasn't been synced yet.")
 
-    my_owner_id = _my_owner_id_for(league_id)
+    my_owner_id = _my_owner_id_for(conn, league_id)
     results = find_buy_low_sell_high(conn, league_id, league["format"] or "redraft", limit=limit, my_owner_id=my_owner_id)
     if not results:
         click.echo(
@@ -532,7 +520,7 @@ def devy_list_cmd(qb_mode: str):
 @cli.command("owners")
 @click.argument("league_id")
 def owners_cmd(league_id: str):
-    """List owners in a synced league — find your owner_id to set my_owner_id in config/leagues.yaml."""
+    """List owners in a synced league — find your owner_id for `add-league --my-owner-id` or the web Settings page."""
     conn = db_module.get_connection()
     league = conn.execute("SELECT * FROM leagues WHERE league_id = ?", (league_id,)).fetchone()
     if not league:
@@ -549,6 +537,52 @@ def owners_cmd(league_id: str):
     click.echo(f"{'Owner ID':<22} {'Display Name':<20} {'Team Name':<25}")
     for r in rows:
         click.echo(f"{r['owner_id']:<22} {(r['display_name'] or ''):<20} {(r['team_name'] or ''):<25}")
+
+
+@cli.command("list-leagues")
+def list_leagues_cmd():
+    """List leagues currently configured to sync (see also: the web Settings page)."""
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+    rows = league_sources.list_sources(conn)
+    if not rows:
+        click.echo("No leagues configured yet. Use `fantasy-assistant add-league` or the web Settings page.")
+        return
+    click.echo(f"{'League ID':<24} {'Platform':<9} {'Format':<10} {'My Owner ID':<22} {'ESPN Season'}")
+    for r in rows:
+        click.echo(
+            f"{r['league_id']:<24} {r['platform']:<9} {(r['format_override'] or 'auto'):<10} "
+            f"{(r['my_owner_id'] or '-'):<22} {r['espn_season'] or ''}"
+        )
+
+
+@cli.command("add-league")
+@click.argument("league_id")
+@click.option("--platform", type=click.Choice(["sleeper", "espn"]), required=True)
+@click.option("--format", "format_override", type=click.Choice(["redraft", "dynasty", "devy"]), default=None, help="Leave unset for Sleeper to auto-detect redraft/dynasty. ESPN has no auto-detect — set it explicitly, or as devy.")
+@click.option("--my-owner-id", default=None, help="Find yours with `fantasy-assistant owners LEAGUE_ID` after the first sync.")
+@click.option("--espn-season", type=int, default=None, help="Required for --platform espn.")
+def add_league_cmd(league_id: str, platform: str, format_override: str | None, my_owner_id: str | None, espn_season: int | None):
+    """Start tracking a league — sync-all/sync-rankings will pick it up from here on."""
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+    try:
+        league_sources.add_source(
+            conn, league_id, platform, format_override=format_override, my_owner_id=my_owner_id, espn_season=espn_season
+        )
+    except league_sources.LeagueSourceError as exc:
+        raise click.ClickException(str(exc))
+    click.echo(f"Added {platform} league {league_id}. Run sync-all (or sync-espn, for ESPN) to pull its data.")
+
+
+@cli.command("remove-league")
+@click.argument("league_id")
+def remove_league_cmd(league_id: str):
+    """Stop syncing a league. Doesn't delete data already synced from it."""
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+    removed = league_sources.remove_source(conn, league_id)
+    click.echo(f"Removed {league_id} — it won't be synced going forward." if removed else f"{league_id} wasn't tracked.")
 
 
 @cli.command("standings")

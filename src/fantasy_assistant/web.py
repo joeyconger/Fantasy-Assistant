@@ -20,13 +20,13 @@ import secrets as secrets_module
 
 from urllib.parse import quote, unquote
 
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, Form, HTTPException, Query, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from . import config as config_module
 from . import db as db_module
 from . import devy as devy_module
+from . import league_sources
 from .analysis.buy_low_sell_high import find_buy_low_sell_high
 from .analysis.draft_board import find_rank_inefficiencies
 from .analysis.roster_format import detect_qb_mode
@@ -69,12 +69,9 @@ def health():
     return {"status": "ok"}
 
 
-def _my_owner_id_for(league_id: str) -> str | None:
-    """Looks up my_owner_id for a league from config/leagues.yaml, if configured."""
-    try:
-        app_config = config_module.load_config()
-    except FileNotFoundError:
-        return None
+def _my_owner_id_for(conn, league_id: str) -> str | None:
+    """Looks up my_owner_id for a league from league_sources, if set."""
+    app_config = league_sources.load_config(conn)
     for league_cfg in app_config.sleeper_leagues:
         if league_cfg.league_id == league_id:
             return league_cfg.my_owner_id
@@ -109,6 +106,7 @@ def _nav_html(conn, current_league_id: str | None = None) -> str:
             f'<a class="{"active" if active else ""}" {style} '
             f'href="/league/{quote(l["league_id"])}">{html.escape(l["name"] or l["league_id"])}</a>'
         )
+    links.append(f'<a class="{"active" if current_league_id == "__settings__" else ""}" href="/settings">⚙ Settings</a>')
     return "".join(links)
 
 
@@ -187,7 +185,7 @@ def _priority_items(conn, leagues) -> str:
     flags = []
     adds = []
     for league in leagues:
-        my_owner_id = _my_owner_id_for(league["league_id"])
+        my_owner_id = _my_owner_id_for(conn, league["league_id"])
         for r in find_buy_low_sell_high(conn, league["league_id"], league["format"] or "redraft", limit=3, my_owner_id=my_owner_id):
             for flag, reason in r["flags"]:
                 flags.append((league, r, flag, reason))
@@ -363,7 +361,7 @@ def waivers_page(league_id: str, _user: str = Depends(require_auth)):
     try:
         league = _get_league_or_404(conn, league_id)
         nav_html = _nav_html(conn, league_id)
-        my_owner_id = _my_owner_id_for(league_id)
+        my_owner_id = _my_owner_id_for(conn, league_id)
         adds = top_waiver_adds(conn, league_id, my_owner_id=my_owner_id)
         targets = top_trade_targets(conn, league_id, my_owner_id=my_owner_id)
     finally:
@@ -416,7 +414,7 @@ def buy_sell_page(league_id: str, _user: str = Depends(require_auth)):
     try:
         league = _get_league_or_404(conn, league_id)
         nav_html = _nav_html(conn, league_id)
-        my_owner_id = _my_owner_id_for(league_id)
+        my_owner_id = _my_owner_id_for(conn, league_id)
         results = find_buy_low_sell_high(conn, league_id, league["format"] or "redraft", my_owner_id=my_owner_id)
     finally:
         conn.close()
@@ -582,13 +580,199 @@ def devy_page(league_id: str, _user: str = Depends(require_auth)):
     return _page("Devy Watchlist", f"{subnav}<h2>Devy Watchlist ({qb_mode.upper()})</h2>{body}", nav_html=nav_html)
 
 
+_FORMAT_OPTIONS = [("", "Auto-detect"), ("redraft", "Redraft"), ("dynasty", "Dynasty"), ("devy", "Devy")]
+
+
+def _format_select_html(name: str, current: str | None) -> str:
+    options = "".join(
+        f'<option value="{value}"{" selected" if (current or "") == value else ""}>{label}</option>'
+        for value, label in _FORMAT_OPTIONS
+    )
+    return f'<select name="{name}">{options}</select>'
+
+
+def _owner_field_html(conn, league_id: str, name: str, current: str | None) -> str:
+    """A <select> of that league's synced owners if any exist, else a plain
+    text input — matches how personalization already worked (run `owners`
+    after syncing), just without the copy-paste round trip."""
+    owner_rows = conn.execute(
+        "SELECT owner_id, display_name, team_name FROM owners WHERE league_id = ? ORDER BY display_name",
+        (league_id,),
+    ).fetchall()
+    if not owner_rows:
+        return (
+            f'<input type="text" name="{name}" value="{html.escape(current or "")}" placeholder="owner_id (sync this league first for a dropdown)">'
+        )
+    options = ['<option value="">— none —</option>']
+    for row in owner_rows:
+        label = row["display_name"] or row["team_name"] or row["owner_id"]
+        selected = " selected" if row["owner_id"] == current else ""
+        options.append(f'<option value="{html.escape(row["owner_id"])}"{selected}>{html.escape(label)}</option>')
+    return f'<select name="{name}">{"".join(options)}</select>'
+
+
+@app.get("/settings", response_class=HTMLResponse)
+def settings_page(_user: str = Depends(require_auth), error: str = Query(default=""), success: str = Query(default="")):
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+    try:
+        nav_html = _nav_html(conn, current_league_id="__settings__")
+        sources = league_sources.list_sources(conn)
+
+        rows = []
+        for src in sources:
+            league_row = conn.execute("SELECT name FROM leagues WHERE league_id = ?", (src["league_id"],)).fetchone()
+            league_name = (league_row["name"] if league_row else None) or src["league_id"]
+            sync_note = "" if league_row else "<p class='empty' style='margin:0 0 var(--space-2);'>Not synced yet — sync it to unlock the owner dropdown.</p>"
+
+            espn_season_field = (
+                f'<label>ESPN season<br><input type="number" name="espn_season" value="{src["espn_season"] or ""}"></label>'
+                if src["platform"] == "espn"
+                else ""
+            )
+            rows.append(f"""
+            <div class="card">
+              <h3>{html.escape(league_name)} {format_badge(src["format_override"] or "auto")}
+                <span class="tag">{html.escape(src["platform"])} · {html.escape(src["league_id"])}</span></h3>
+              {sync_note}
+              <form method="post" action="/settings/update/{quote(src['league_id'])}">
+                <div style="display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-end;">
+                  <label>Format override<br>{_format_select_html("format_override", src["format_override"])}</label>
+                  <label>My owner ID (personalization)<br>{_owner_field_html(conn, src["league_id"], "my_owner_id", src["my_owner_id"])}</label>
+                  {espn_season_field}
+                  <button type="submit">Save</button>
+                </div>
+              </form>
+              <form method="post" action="/settings/remove/{quote(src['league_id'])}" style="margin-top:var(--space-2);"
+                    onsubmit="return confirm('Stop syncing {html.escape(league_name)}? Already-synced data is kept.');">
+                <button type="submit" class="btn" style="background:var(--sell);">Remove</button>
+              </form>
+            </div>
+            """)
+
+        add_form = f"""
+        <div class="card">
+          <h3>Add a league</h3>
+          <form method="post" action="/settings/add">
+            <div style="display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-end;">
+              <label>League ID<br><input type="text" name="league_id" required></label>
+              <label>Platform<br>
+                <select name="platform" id="add-league-platform" onchange="document.getElementById('add-league-season').style.display = this.value === 'espn' ? '' : 'none';">
+                  <option value="sleeper">Sleeper</option>
+                  <option value="espn">ESPN</option>
+                </select>
+              </label>
+              <label>Format override<br>{_format_select_html("format_override", None)}</label>
+              <label>My owner ID<br><input type="text" name="my_owner_id" placeholder="sync first, then set this below"></label>
+              <label id="add-league-season" style="display:none;">ESPN season<br><input type="number" name="espn_season"></label>
+              <button type="submit">Add League</button>
+            </div>
+          </form>
+          <p class="tag" style="margin-top:var(--space-2);">Only one ESPN league is supported at a time. After adding,
+          run Sync Now (or <code>sync-all</code>/<code>sync-espn</code>) to pull its data.</p>
+        </div>
+        """
+
+    finally:
+        conn.close()
+
+    banner = ""
+    if error:
+        banner = f"<div class='errors'>{html.escape(unquote(error))}</div>"
+    elif success:
+        banner = f"<div class='card' style='border-color:var(--buy);'>{html.escape(unquote(success))}</div>"
+
+    body = f"""
+    {banner}
+    <h2>Leagues</h2>
+    {"".join(rows) if rows else "<p class='empty'>No leagues configured yet — add one below.</p>"}
+    <h2>Add League</h2>
+    {add_form}
+    """
+    return _page("Settings", body, nav_html=nav_html)
+
+
+def _parse_optional_season(espn_season: str) -> int | None:
+    espn_season = espn_season.strip()
+    if not espn_season:
+        return None
+    try:
+        return int(espn_season)
+    except ValueError:
+        raise league_sources.LeagueSourceError(f"ESPN season must be a number, got {espn_season!r}.")
+
+
+@app.post("/settings/add")
+def settings_add(
+    _user: str = Depends(require_auth),
+    league_id: str = Form(...),
+    platform: str = Form(...),
+    format_override: str = Form(default=""),
+    my_owner_id: str = Form(default=""),
+    espn_season: str = Form(default=""),
+):
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+    try:
+        season = _parse_optional_season(espn_season)
+        league_sources.add_source(
+            conn,
+            league_id.strip(),
+            platform,
+            format_override=format_override or None,
+            my_owner_id=my_owner_id.strip() or None,
+            espn_season=season,
+        )
+        redirect_url = f"/settings?success={quote(f'Added {platform} league {league_id.strip()}.')}"
+    except league_sources.LeagueSourceError as exc:
+        redirect_url = f"/settings?error={quote(str(exc))}"
+    finally:
+        conn.close()
+    return RedirectResponse(url=redirect_url, status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/settings/update/{league_id}")
+def settings_update(
+    league_id: str,
+    _user: str = Depends(require_auth),
+    format_override: str = Form(default=""),
+    my_owner_id: str = Form(default=""),
+    espn_season: str = Form(default=""),
+):
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+    try:
+        season = _parse_optional_season(espn_season)
+        league_sources.update_source(
+            conn, league_id, format_override=format_override or None, my_owner_id=my_owner_id.strip() or None, espn_season=season
+        )
+        redirect_url = "/settings?success=" + quote("Saved.")
+    except league_sources.LeagueSourceError as exc:
+        redirect_url = f"/settings?error={quote(str(exc))}"
+    finally:
+        conn.close()
+    return RedirectResponse(url=redirect_url, status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/settings/remove/{league_id}")
+def settings_remove(league_id: str, _user: str = Depends(require_auth)):
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+    try:
+        removed = league_sources.remove_source(conn, league_id)
+    finally:
+        conn.close()
+    msg = "Removed." if removed else "That league wasn't tracked."
+    return RedirectResponse(url=f"/settings?success={quote(msg)}", status_code=status.HTTP_303_SEE_OTHER)
+
+
 @app.post("/sync")
 def trigger_sync(_user: str = Depends(require_auth)):
     conn = db_module.get_connection()
     db_module.init_db(conn)
     errors: list[str] = []
     try:
-        app_config = config_module.load_config()
+        app_config = league_sources.load_config(conn)
 
         sleeper_client = SleeperClient()
         sync_players(conn, sleeper_client)
