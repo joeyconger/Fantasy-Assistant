@@ -257,6 +257,7 @@ fantasy-assistant sync-weekly-points 1389373095143284736   # this week's + recen
 fantasy-assistant sync-ktc --format dynasty --qb-mode 1qb   # or --format devy, --qb-mode superflex
 fantasy-assistant sync-fantasypros
 fantasy-assistant sync-ffc-adp --qb-mode 1qb        # or --qb-mode superflex; real ADP for the draft board
+fantasy-assistant sync-draft-data                   # sync-rankings + FFC ADP (both qb_modes) in one call — see "Auto-syncing draft data"
 fantasy-assistant sync-reddit       # needs APIFY_API_TOKEN; see "Reddit sentiment via Apify" for subreddit/flair defaults
 
 fantasy-assistant list-leagues                                    # leagues currently configured to sync
@@ -437,6 +438,15 @@ redo it, or want to point a fresh Railway project at this repo.
 3. **Variables**: `DASHBOARD_USER`, `DASHBOARD_PASSWORD`, `DATABASE_PATH=/data/fantasy_assistant.db`,
    `ESPN_SWID`, `ESPN_S2`, and (once you set it up) `APIFY_API_TOKEN`.
 4. **Networking → Generate Domain**.
+5. **Auto-sync cron service** (optional but recommended — see "Auto-syncing
+   draft data" below): in the same project, **+ New → GitHub Repo** → same
+   repo/branch again, to add a second service. On that new service: **Settings
+   → Config-as-code path** → set to `railway.cron.json` (instead of the
+   default `railway.json`, so it gets the cron start command instead of the
+   web server's). Attach the **same Volume** at the same `/data` mount path,
+   and set the same `DATABASE_PATH`, `ESPN_SWID`, `ESPN_S2` variables (skip
+   `DASHBOARD_USER`/`DASHBOARD_PASSWORD` — the CLI doesn't need them). No
+   domain needed for this service.
 
 Web dashboard pages: `/` (priorities + standings + Sync Now), `/settings`
 (add/edit/remove leagues — see "Settings" below), then
@@ -480,6 +490,31 @@ ESPN cookies (`ESPN_SWID`/`ESPN_S2`) still come from env vars/
 `config/secrets.yaml` only, never the DB — that credential boundary is
 unchanged.
 
+## Auto-syncing draft data
+
+`fantasy-assistant sync-draft-data` refreshes everything the draft board
+depends on in one call: Sleeper `search_rank` + ESPN's full player pool
+(`_sync_rank_data`, the same logic `sync-rankings` uses) plus FFC ADP for
+**both** qb_modes (1qb and superflex — different leagues use different
+modes, so both need refreshing regardless of which league you check the
+draft board from). Each underlying sync still respects its own cache (12h
+for FFC/ESPN rankings), so running it more often than data actually changes
+is a cheap no-op, not a wasted call.
+
+**On Railway**, this runs automatically via a second cron service pointed
+at `railway.cron.json` (see step 5 of "Deploy to Railway" above) — a
+[Railway Cron Schedule](https://docs.railway.com/reference/cron-jobs), not
+a job inside the web process, so it runs independently of whether the
+dashboard itself is under load. Default schedule is `0 13 * * *` (13:00
+UTC, once daily) — edit `railway.cron.json`'s `cronSchedule` field (5-field
+cron syntax, UTC) if you want a different time or cadence; the minimum
+Railway allows is once every 5 minutes, though daily is plenty for
+ADP/rankings, which shift gradually rather than minute-to-minute.
+
+**Locally**, there's no scheduler — just run `fantasy-assistant
+sync-draft-data` (or `--force` to bypass the caches) whenever you want fresh
+data, same as any other sync command.
+
 ## Data model notes
 
 - **Cross-platform player identity**: Sleeper, ESPN, KTC, and FantasyPros
@@ -513,7 +548,8 @@ unchanged.
 ## Project layout
 
 ```
-railway.json                 # Railway build/start command config
+railway.json                 # Railway build/start command config (web service)
+railway.cron.json            # Railway config for the daily draft-data sync cron service
 .env.example                  # env vars the web dashboard/CLI can use
 config/
   leagues.yaml               # one-time migration input only, see league_sources.py

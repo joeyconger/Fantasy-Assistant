@@ -146,12 +146,9 @@ def sync_all_cmd():
                 click.echo(f"ESPN rankings: skipped — {exc}")
 
 
-@cli.command("sync-rankings")
-def sync_rankings_cmd():
-    """Sync overall-rank/ADP data: Sleeper search_rank (from sync-players) + ESPN's full player pool."""
-    conn = db_module.get_connection()
-    db_module.init_db(conn)
-
+def _sync_rank_data(conn) -> None:
+    """Sync overall-rank data: Sleeper search_rank (from sync-players) + ESPN's full player
+    pool. Shared by sync-rankings and sync-draft-data so both stay in sync."""
     client = SleeperClient()
     try:
         count = sync_players(conn, client)
@@ -172,6 +169,14 @@ def sync_rankings_cmd():
         click.echo(f"ESPN rankings: synced {count} players")
     except (ESPNAuthRequired, ESPNAPIError) as exc:
         click.echo(f"ESPN rankings: failed — {exc}")
+
+
+@cli.command("sync-rankings")
+def sync_rankings_cmd():
+    """Sync overall-rank/ADP data: Sleeper search_rank (from sync-players) + ESPN's full player pool."""
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+    _sync_rank_data(conn)
 
 
 @cli.command("draft-board")
@@ -337,6 +342,30 @@ def sync_ffc_adp_cmd(qb_mode: str, teams: int, force: bool):
             "at the response shape. Paste this error back and it can be fixed."
         )
     click.echo(f"Synced {count} {qb_mode} ADP entries from FFC." if count else "FFC ADP cache fresh (<12h) — skipped. Use --force.")
+
+
+@cli.command("sync-draft-data")
+@click.option("--teams", default=12, help="League size FFC's ADP is drawn from.")
+@click.option("--force", is_flag=True, help="Bypass each source's cache and refresh even if recently synced.")
+def sync_draft_data_cmd(teams: int, force: bool):
+    """Refresh everything the draft board depends on in one call: Sleeper/ESPN rank data plus
+    FFC ADP for both qb_modes (1qb and superflex, since different leagues use different modes).
+    Meant to be run on a schedule (e.g. a Railway cron service — see README) so draft
+    rankings/ADP stay current without a manual sync-rankings/sync-ffc-adp round trip."""
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+
+    _sync_rank_data(conn)
+
+    ffc_client = FFCClient()
+    for qb_mode in ("1qb", "superflex"):
+        try:
+            count = ffc_sync_adp(conn, ffc_client, qb_mode=qb_mode, teams=teams, force=force)
+            click.echo(f"FFC ADP ({qb_mode}): synced {count} entries" if count else f"FFC ADP ({qb_mode}): cache fresh (<12h) — skipped.")
+        except FFCFetchError as exc:
+            click.echo(f"FFC ADP ({qb_mode}): failed — couldn't reach Fantasy Football Calculator: {exc}")
+        except FFCParseError as exc:
+            click.echo(f"FFC ADP ({qb_mode}): failed — {exc}")
 
 
 def _build_subreddit_flairs(pairs: tuple[tuple[str, str], ...]) -> dict[str, list[str] | None] | None:
