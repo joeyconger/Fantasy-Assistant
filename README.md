@@ -229,7 +229,7 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-173 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
+176 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
 the private-league auth path, the players table's platform-scoped primary
 key (prevents Sleeper/ESPN ID collisions), cross-platform name matching
 (suffixes, punctuation, ambiguous-duplicate handling), the rank-inefficiency
@@ -412,7 +412,13 @@ KTC/FFC), mirroring `players_cache_meta`'s single-row shape.
 lexicon match, not NLP. For each fetched post, the title+body text is
 checked for a mention of a tracked player by last name (crude but readable
 — catches casual references like "Chase is a stud" without needing full
-name matches). Any post that mentions a player is scored by counting how
+name matches) — **except** when two tracked players share a last name
+(e.g. Josh Allen and Cyrus Allen), where the full name is required
+instead, so "Allen is a must-start" doesn't silently score both of them
+off one post that's really only about one — same "leave it unmatched
+rather than guess wrong" rule `platforms/matching.py` already uses for
+ambiguous cross-platform name matches. Any post that mentions a player is
+scored by counting how
 many words from a fixed positive list (`buy`, `breakout`, `stud`, `elite`,
 `value`, `bell cow`, ...) versus a fixed negative list (`sell`, `bust`,
 `injury`, `avoid`, `fade`, `overrated`, ...) appear in it — net_score =
