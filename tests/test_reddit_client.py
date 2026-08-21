@@ -105,8 +105,8 @@ def test_fetch_recent_posts_sends_all_requested_subreddits_and_limit(monkeypatch
     fetch_recent_posts(subreddit_flairs={"nfl": None}, limit=25)
 
     payload = json_module.loads(responses.calls[0].request.body)
-    assert payload["subreddits"] == ["nfl"]
-    assert payload["maxItems"] == 25
+    assert payload["subredditUrls"] == [{"url": "https://www.reddit.com/r/nfl/"}]
+    assert payload["maxPostsCount"] == 25
 
 
 @responses.activate
@@ -144,7 +144,8 @@ def test_default_requests_both_dynastyff_and_fantasyfootball(monkeypatch):
     fetch_recent_posts()
 
     payload = json_module.loads(responses.calls[0].request.body)
-    assert set(payload["subreddits"]) == {"DynastyFF", "fantasyfootball"}
+    requested_subs = {u["url"] for u in payload["subredditUrls"]}
+    assert requested_subs == {"https://www.reddit.com/r/DynastyFF/", "https://www.reddit.com/r/fantasyfootball/"}
 
 
 @responses.activate

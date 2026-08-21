@@ -11,19 +11,16 @@ Requires APIFY_API_TOKEN — a free Apify account (no card needed; the free
 plan grants $5/month of usage, which comfortably covers this app's volume)
 gets you one from https://console.apify.com/settings/integrations.
 
-**UNVERIFIED**: this sandbox can't reach apify.com. Uses the
-`trudax/reddit-scraper-lite` actor (one of the more established, actively
-maintained Reddit scrapers on Apify) via its `run-sync-get-dataset-items`
-endpoint, which runs the actor and returns its output dataset in one HTTP
-call (capped at 300s server-side per Apify's own docs). Neither the input
-parameter names nor the output field names are confirmed against a live
-run — Apify Reddit actors aren't standardized across authors, so field
-extraction here tries several plausible candidate keys per attribute
-(same defensive pattern as espn/rankings.py's rank-type guessing) rather
-than betting on one exact schema. Run `fantasy-assistant sync-reddit`
-locally; if it errors or mention counts come back at zero despite real
-matching posts existing, dump one raw dataset item's keys and this needs a
-real look.
+Actor ID and input schema (subredditUrls/searchPosts/proxy/etc.) below are
+copied directly from the actual actor's own "API" code sample in the
+Apify console — not guessed. The **output** field names are still
+unconfirmed (that sample only showed `print(item)`, no real payload), so
+field extraction there still tries several plausible candidate keys per
+attribute (same defensive pattern as espn/rankings.py's rank-type
+guessing) rather than betting on one exact schema. Run `fantasy-assistant
+sync-reddit`; if mention counts come back at zero despite real matching
+posts existing, dump one raw dataset item's keys and this needs a real
+look — the request itself should now succeed.
 
 Each subreddit gets its own flair allowlist (DEFAULT_SUBREDDIT_FLAIRS) — by
 request, since r/DynastyFF's "Player Discussion"/"News" posts and
@@ -46,7 +43,10 @@ import os
 import requests
 
 TIMEOUT_SECONDS = 60
-DEFAULT_ACTOR = "trudax~reddit-scraper-lite"
+# Copied from the actor's own "API" code sample in the Apify console — an
+# opaque Apify actor ID, not a human-readable slug, so don't try to guess
+# a friendlier name for it.
+DEFAULT_ACTOR = "9sHOY9RzPYGjmTHo8"
 
 # subreddit -> allowed flairs (None means "no flair filter for this sub").
 # Matched against the extracted subreddit case-insensitively.
@@ -122,7 +122,25 @@ def fetch_recent_posts(
     session = session or requests.Session()
 
     url = f"https://api.apify.com/v2/acts/{actor}/run-sync-get-dataset-items"
-    payload = {"subreddits": list(subreddit_flairs.keys()), "sort": "new", "maxItems": limit}
+    # Input shape copied from the actor's own API code sample — subreddits
+    # are passed as subredditUrls (a list of {"url": ...} objects, mirroring
+    # startUrls' shape for individual posts), not a bare list of names.
+    payload = {
+        "searchPosts": True,
+        "searchComments": False,
+        "searchCommunities": False,
+        "searchSort": "new",
+        "searchTime": "all",
+        "subredditUrls": [{"url": f"https://www.reddit.com/r/{sub}/"} for sub in subreddit_flairs],
+        "startUrls": [],
+        "fastMode": True,
+        "onlyWithFlair": False,  # we do our own per-subreddit flair filtering below
+        "includeNSFW": False,
+        "maxPostsCount": limit,
+        "maxCommentsCount": 0,
+        "maxCommentsPerPost": 0,
+        "proxy": {"useApifyProxy": True, "apifyProxyGroups": ["RESIDENTIAL"]},
+    }
 
     try:
         resp = session.post(url, params={"token": token}, json=payload, timeout=TIMEOUT_SECONDS)
