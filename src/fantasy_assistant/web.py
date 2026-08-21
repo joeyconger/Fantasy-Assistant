@@ -26,6 +26,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from . import auto_sync
+from . import cli as cli_module
 from . import db as db_module
 from . import devy as devy_module
 from . import league_sources
@@ -37,6 +38,8 @@ from .analysis.waiver_targets import top_trade_targets, top_waiver_adds
 from .platforms.espn.client import ESPNAPIError, ESPNAuthRequired, ESPNClient
 from .platforms.espn.rankings import sync_player_pool as espn_sync_player_pool
 from .platforms.espn.sync import sync_league as espn_sync_league
+from .platforms.ffc.client import FFCClient, FFCFetchError, FFCParseError
+from .platforms.ffc.sync import sync_adp as ffc_sync_adp
 from .platforms.sleeper.client import SleeperAPIError, SleeperClient
 from .platforms.sleeper.sync import sync_league as sleeper_sync_league
 from .platforms.sleeper.sync import sync_players
@@ -801,6 +804,17 @@ def trigger_sync(_user: str = Depends(require_auth)):
                 espn_sync_player_pool(conn, espn_client, espn_cfg.season)
             except (ESPNAuthRequired, ESPNAPIError) as exc:
                 errors.append(f"ESPN rankings: {exc}")
+
+        ffc_client = FFCClient()
+        for qb_mode in ("1qb", "superflex"):
+            try:
+                ffc_sync_adp(conn, ffc_client, qb_mode=qb_mode)
+            except FFCFetchError as exc:
+                errors.append(f"FFC ADP ({qb_mode}): couldn't reach Fantasy Football Calculator: {exc}")
+            except FFCParseError as exc:
+                errors.append(f"FFC ADP ({qb_mode}): {exc}")
+
+        cli_module._sync_market_data(conn)
     finally:
         conn.close()
 
