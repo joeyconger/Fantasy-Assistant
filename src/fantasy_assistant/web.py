@@ -40,6 +40,8 @@ from .platforms.espn.rankings import sync_player_pool as espn_sync_player_pool
 from .platforms.espn.sync import sync_league as espn_sync_league
 from .platforms.ffc.client import FFCClient, FFCFetchError, FFCParseError
 from .platforms.ffc.sync import sync_adp as ffc_sync_adp
+from .platforms.reddit.client import ApifyFetchError, ApifyNotConfigured
+from .platforms.reddit.sync import sync_reddit_sentiment, tracked_player_names
 from .platforms.sleeper.client import SleeperAPIError, SleeperClient
 from .platforms.sleeper.sync import sync_league as sleeper_sync_league
 from .platforms.sleeper.sync import sync_players
@@ -238,7 +240,13 @@ def _render_dashboard(conn, errors: list[str] | None = None) -> str:
         items = "".join(f"<li>{html.escape(e)}</li>" for e in errors)
         error_html = f'<div class="errors"><strong>Sync had problems:</strong><ul>{items}</ul></div>'
 
-    sync_form = '<form method="post" action="/sync" onsubmit="this.querySelector(\'button\').disabled=true; this.querySelector(\'button\').textContent=\'Syncing…\';"><button type="submit">Sync Now</button></form>'
+    sync_form = (
+        '<div style="display:flex; gap:0.75rem; flex-wrap:wrap;">'
+        '<form method="post" action="/sync" onsubmit="this.querySelector(\'button\').disabled=true; this.querySelector(\'button\').textContent=\'Syncing…\';"><button type="submit">Sync Now</button></form>'
+        '<form method="post" action="/sync-reddit" onsubmit="this.querySelector(\'button\').disabled=true; this.querySelector(\'button\').textContent=\'Syncing…\';">'
+        '<button type="submit" class="btn">Sync Reddit Sentiment</button></form>'
+        "</div>"
+    )
 
     if not leagues:
         return _page("Dashboard", sync_form + error_html + "<p class='empty'>No leagues synced yet. Click Sync Now.</p>", nav_html=nav_html)
@@ -821,4 +829,32 @@ def trigger_sync(_user: str = Depends(require_auth)):
     if errors:
         error_param = "\x1f".join(quote(e) for e in errors)
         return RedirectResponse(url=f"/?errors={error_param}", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/sync-reddit")
+def trigger_reddit_sync(_user: str = Depends(require_auth)):
+    """Kept separate from /sync (and from the automatic daily sync) — Reddit
+    sentiment costs against a metered Apify budget and sits in a ToS gray
+    area, so it stays a deliberate, manual action rather than something
+    that runs on its own."""
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+    error = None
+    try:
+        player_names = tracked_player_names(conn)
+        if not player_names:
+            error = "Reddit sync: no rostered players found — sync a league first."
+        else:
+            try:
+                sync_reddit_sentiment(conn, player_names)
+            except ApifyNotConfigured as exc:
+                error = f"Reddit sync: {exc}"
+            except ApifyFetchError as exc:
+                error = f"Reddit sync failed: {exc}"
+    finally:
+        conn.close()
+
+    if error:
+        return RedirectResponse(url=f"/?errors={quote(error)}", status_code=status.HTTP_303_SEE_OTHER)
     return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)

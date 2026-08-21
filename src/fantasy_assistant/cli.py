@@ -392,8 +392,7 @@ def sync_ffc_adp_cmd(qb_mode: str, teams: int, force: bool):
 def sync_draft_data_cmd(teams: int, force: bool):
     """Refresh everything the draft board depends on in one call: Sleeper/ESPN rank data plus
     FFC ADP for both qb_modes (1qb and superflex, since different leagues use different modes).
-    Meant to be run on a schedule (e.g. a Railway cron service — see README) so draft
-    rankings/ADP stay current without a manual sync-rankings/sync-ffc-adp round trip."""
+    Also runs automatically once a day from inside the web app itself (see auto_sync.py)."""
     conn = db_module.get_connection()
     db_module.init_db(conn)
 

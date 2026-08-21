@@ -111,6 +111,19 @@ def _seed_leagues(tmp_path):
     conn.close()
 
 
+def test_sync_reddit_requires_auth(web_app):
+    client = TestClient(web_app.app, follow_redirects=False)
+    resp = client.post("/sync-reddit")
+    assert resp.status_code == 401
+
+
+def test_sync_reddit_no_rostered_players(web_app):
+    client = TestClient(web_app.app, follow_redirects=False)
+    resp = client.post("/sync-reddit", headers=_auth_header("testuser", "testpass"))
+    assert resp.status_code == 303
+    assert "errors=" in resp.headers["location"]
+
+
 def test_league_hub_404s_for_unknown_league(web_app, tmp_path):
     _seed_leagues(tmp_path)
     client = TestClient(web_app.app)

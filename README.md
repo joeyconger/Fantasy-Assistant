@@ -229,7 +229,7 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-171 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
+173 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
 the private-league auth path, the players table's platform-scoped primary
 key (prevents Sleeper/ESPN ID collisions), cross-platform name matching
 (suffixes, punctuation, ambiguous-duplicate handling), the rank-inefficiency
@@ -367,6 +367,16 @@ as `espn/rankings.py`'s rank-type guessing). Set `APIFY_API_TOKEN` and run
 `fantasy-assistant sync-reddit` locally to verify; an `ApifyFetchError` or
 a run that scans posts but scores zero players despite real matches
 existing both point at the assumptions in `client.py` needing a real look.
+
+**On the deployed web dashboard**, there's a **"Sync Reddit Sentiment"**
+button next to Sync Now (`POST /sync-reddit`) using the default subreddit/
+flair ruleset — the only way to trigger this against production data now
+that there's no separate CLI/cron access to that database. Deliberately
+kept out of both `/sync` and the automatic daily sync (see "Auto-syncing
+draft/market data" below) for the same cost/ToS reasons — it only ever
+runs when someone consciously clicks it. Set `APIFY_API_TOKEN` as a
+Railway variable on the web service (never commit it to any file) before
+using it.
 
 **Scoped per subreddit, by request**: each subreddit gets its own flair
 allowlist, since r/DynastyFF's "Player Discussion"/"News" posts and
