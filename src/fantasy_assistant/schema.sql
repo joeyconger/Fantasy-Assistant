@@ -209,6 +209,38 @@ CREATE TABLE IF NOT EXISTS draft_adp_cache_meta (
     PRIMARY KEY (source, qb_mode)
 );
 
+-- Advanced weekly usage stats (target share, air yards share, WOPR, RACR)
+-- from nflverse's free public weekly player-stats CSVs
+-- (github.com/nflverse/nflverse-data) — no API key needed, unlike
+-- snap/target/red-zone data from Sleeper/ESPN which isn't exposed at all
+-- (see README's "Data model notes"). Keyed by normalized_name+position
+-- like market_values/expert_rankings/draft_adp, since nflverse has its own
+-- player IDs with no shared key to Sleeper/ESPN, plus season+week since
+-- this is genuinely per-game data, not a single current snapshot.
+CREATE TABLE IF NOT EXISTS advanced_stats (
+    source TEXT NOT NULL,            -- 'nflverse'
+    season INTEGER NOT NULL,
+    week INTEGER NOT NULL,
+    normalized_name TEXT NOT NULL,
+    full_name TEXT,
+    position TEXT,
+    team TEXT,
+    targets INTEGER,
+    target_share REAL,               -- this player's share of the team's total targets that week
+    air_yards_share REAL,            -- this player's share of the team's total air yards that week
+    wopr REAL,                       -- Weighted Opportunity Rating: 1.5*target_share + 0.7*air_yards_share
+    racr REAL,                       -- Receiver Air Conversion Ratio: receiving_yards / air_yards
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (source, season, week, normalized_name, position)
+);
+
+CREATE TABLE IF NOT EXISTS advanced_stats_cache_meta (
+    source TEXT NOT NULL,
+    season INTEGER NOT NULL,
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (source, season)
+);
+
 -- Basic mention/sentiment counts from Reddit (see analysis/sentiment.py for
 -- the scoring method — lexicon-based, not NLP).
 CREATE TABLE IF NOT EXISTS player_sentiment (

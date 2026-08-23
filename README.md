@@ -29,6 +29,7 @@ Railway) as a small shared web dashboard with a Sleeper/ESPN-app-style design
 | Buy-low/sell-high engine | ⚠️ Combines the above signals correctly (verified via synthetic data + now real KTC + FantasyPros data). Still needs weekly-points data to say anything for a given league — no games played yet this season. |
 | Devy watchlist | ✅ Fully built and tested (it's just a manual list — no external dependency), and now cross-references real KTC devy values |
 | Settings page (add/edit/remove leagues, DB-backed config) | ✅ **Verified live** — full add/update/remove flow smoke-tested against a real running server, owner dropdown confirmed populated from synced data |
+| Advanced usage stats (target share, air yards share, WOPR, RACR) via nflverse | ⚠️ **UNVERIFIED** — free public CSV, no API key. See "Advanced stats via nflverse" below. Snap counts/red-zone touches aren't covered (separate nflverse datasets, deliberately left out rather than guessed at). |
 
 **Bottom line**: every data source except X/Twitter (skipped) and Reddit
 (re-enabled via Apify, not yet live-verified) is verified live — Sleeper,
@@ -229,15 +230,16 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-176 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
+189 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
 the private-league auth path, the players table's platform-scoped primary
 key (prevents Sleeper/ESPN ID collisions), cross-platform name matching
 (suffixes, punctuation, ambiguous-duplicate handling), the rank-inefficiency
 engine (including the Superflex QB-crowding position-relative fix and FFC
 ADP integration), performance trend math, waiver/trade filtering, the
-buy-low/sell-high flag logic, KTC/FantasyPros/FFC parser strategies against
-synthetic HTML/JSON, the Apify-based Reddit client's defensive field
-extraction, lexicon-based sentiment scoring, the devy watchlist,
+buy-low/sell-high flag logic, KTC/FantasyPros/FFC/nflverse parser
+strategies against synthetic HTML/JSON/CSV, the Apify-based Reddit
+client's defensive field extraction, lexicon-based sentiment scoring
+(including the shared-last-name disambiguation fix), the devy watchlist,
 roster-needs gap analysis, the trade analyzer, the design-system component
 helpers (XSS-escaping), the web dashboard (auth gating, XSS-escaping,
 missing-env-var fail-fast), the `league_sources` DB-backed config store
@@ -262,6 +264,8 @@ fantasy-assistant sync-ffc-adp --qb-mode 1qb        # or --qb-mode superflex; re
 fantasy-assistant sync-draft-data                   # sync-rankings + FFC ADP (both qb_modes) in one call — see "Auto-syncing draft/market data"
 fantasy-assistant sync-market-values                # KTC (dynasty+devy, both qb_modes) + FantasyPros in one call — feeds buy-sell/devy
 fantasy-assistant sync-reddit       # needs APIFY_API_TOKEN; see "Reddit sentiment via Apify" for subreddit/flair defaults
+fantasy-assistant sync-advanced-stats --season 2026        # target share/air yards share/WOPR/RACR from nflverse
+fantasy-assistant advanced-stats "Ja'Marr Chase" --season 2026    # view a player's synced weekly advanced stats
 
 fantasy-assistant list-leagues                                    # leagues currently configured to sync
 fantasy-assistant add-league LEAGUE_ID --platform sleeper --format dynasty --my-owner-id u1
@@ -438,6 +442,39 @@ Dollars for Devys) — same `league_format in ("dynasty", "devy")` split KTC
 values already use in that function. BMFS and Lads (redraft) never see a
 sentiment-driven flag or the "Sentiment: ±N" line, even once real Reddit
 data is synced.
+
+## Advanced stats via nflverse
+
+Target share, air yards share, WOPR (Weighted Opportunity Rating), and
+RACR (Receiver Air Conversion Ratio) — the usage-quality metrics
+"Data model notes" originally flagged as unavailable from Sleeper/ESPN's
+public APIs. `platforms/nflverse/` pulls these from nflverse's free,
+public weekly player-stats CSV (`github.com/nflverse/nflverse-data`) — no
+API key, no auth, no ToS gray area (unlike Reddit): nflverse publishes
+this data specifically for reuse.
+
+**UNVERIFIED**: same situation KTC/FFC/FantasyPros were in before their
+first live run — this sandbox can't reach github.com, so neither the
+release-asset URL nor the CSV's exact column names are confirmed live.
+`platforms/nflverse/client.py` tries a couple of plausible column-name
+variants per field (nflverse's schema has shifted names across versions,
+e.g. `player_name` vs `player_display_name`) rather than betting on one.
+Run `fantasy-assistant sync-advanced-stats --season 2026`; a
+`NflverseParseError` means the URL/column assumptions need a real look.
+
+**Deliberately scoped smaller than "all advanced stats"**: snap counts and
+true red-zone-touch counts live in *separate* nflverse datasets
+(`snap_counts`, derived from play-by-play) that this integration doesn't
+touch — rather than guess at a second dataset's shape too and risk quietly
+wrong numbers, they're left out of this first pass entirely. If the
+`player_stats` file above checks out live, adding snap counts is the
+natural next step.
+
+**Not wired into buy-sell/waiver-targets yet** — this first pass just gets
+the data synced and queryable (`fantasy-assistant advanced-stats "Player
+Name" --season 2026`). Feeding target share/WOPR into the buy-low/sell-high
+composite score is a reasonable follow-up once a live run confirms the
+parser actually works, not before.
 
 ## ESPN private league
 
@@ -616,5 +653,6 @@ src/fantasy_assistant/
     fantasypros/                # client (verified live), sync
     ffc/                        # client (UNVERIFIED), sync — real ADP for the draft board
     reddit/                     # client (Apify-based, UNVERIFIED), sync
-tests/                        # 139 tests, see "Run the tests" above
+    nflverse/                   # client (UNVERIFIED), sync — target share/air yards share/WOPR/RACR
+tests/                        # see "Run the tests" above for the current count
 ```
