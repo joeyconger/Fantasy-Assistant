@@ -230,7 +230,7 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-203 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
+207 tests, all passing as of this writing. Covers: Sleeper/ESPN sync upserts,
 the private-league auth path, the players table's platform-scoped primary
 key (prevents Sleeper/ESPN ID collisions), cross-platform name matching
 (suffixes, punctuation, ambiguous-duplicate handling), the rank-inefficiency
@@ -265,6 +265,7 @@ fantasy-assistant sync-fantasypros
 fantasy-assistant sync-ffc-adp --qb-mode 1qb        # or --qb-mode superflex; real ADP for the draft board
 fantasy-assistant sync-draft-data                   # sync-rankings + FFC ADP (both qb_modes) in one call — see "Auto-syncing draft/market data"
 fantasy-assistant sync-market-values                # KTC (dynasty+devy, both qb_modes) + FantasyPros in one call — feeds buy-sell/devy
+fantasy-assistant sync-nflverse-data --season 2026   # advanced stats + snap counts in one call — see "Auto-syncing draft/market data"
 fantasy-assistant sync-reddit       # needs APIFY_API_TOKEN; see "Reddit sentiment via Apify" for subreddit/flair defaults
 fantasy-assistant sync-advanced-stats --season 2026        # target share/air yards share/WOPR/RACR from nflverse
 fantasy-assistant advanced-stats "Ja'Marr Chase" --season 2026    # view a player's synced weekly advanced stats
@@ -563,7 +564,7 @@ unchanged.
 
 ## Auto-syncing draft/market data
 
-Two commands cover everything that used to require manual sync calls:
+Three commands cover everything that used to require manual sync calls:
 
 - **`fantasy-assistant sync-draft-data`** — everything the draft board
   depends on: Sleeper `search_rank` + ESPN's full player pool
@@ -574,19 +575,25 @@ Two commands cover everything that used to require manual sync calls:
 - **`fantasy-assistant sync-market-values`** — everything buy-sell/devy
   depend on: KTC dynasty+devy trade values (again, both qb_modes) plus
   FantasyPros redraft consensus rankings.
+- **`fantasy-assistant sync-nflverse-data --season YYYY`** — advanced usage
+  stats (target share/WOPR/RACR) plus snap counts, now factored into
+  buy-sell's usage-trend signal (see "Advanced stats via nflverse" below).
 
-Each underlying sync still respects its own cache (12h for FFC/ESPN/KTC/
-FantasyPros), so running either command more often than data actually
-changes is a cheap no-op, not a wasted call. (Reddit sentiment, via
-`sync-reddit`, is deliberately **not** included in either — it costs
-against a metered Apify budget and sits in a ToS gray area, see "Reddit
-sentiment via Apify" below, so it stays a manual, conscious action.)
+Each underlying sync still respects its own cache (12h), so running any
+command more often than data actually changes is a cheap no-op, not a
+wasted call. (Reddit sentiment, via `sync-reddit`, is deliberately **not**
+included in any of these — it costs against a metered Apify budget and
+sits in a ToS gray area, see "Reddit sentiment via Apify" below, so it
+stays a manual, conscious action.)
 
 **On Railway, this runs in-process** — a background thread inside the web
 service itself (`auto_sync.py`), started from FastAPI's `lifespan` handler
 in `web.py`, that wakes up once a day (13:00 UTC by default — change
-`SYNC_HOUR_UTC` in `auto_sync.py` for a different time) and runs both
-commands directly against the app's own DB connection.
+`SYNC_HOUR_UTC` in `auto_sync.py` for a different time) and runs all three
+directly against the app's own DB connection. The nflverse season is
+computed automatically (`_current_nfl_season()` — the year the season
+started in, rolling over in March) rather than hardcoded, so it stays
+correct without a code change once a new season begins.
 
 **Why not a separate Railway cron service** (which is what this looked
 like at first): Railway Volumes can only be mounted to **one service at a

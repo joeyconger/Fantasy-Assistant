@@ -233,6 +233,40 @@ def sync_weekly_points_cmd(league_id: str, weeks: int):
         raise click.ClickException(str(exc))
 
 
+def _sync_nflverse_data(conn, season: int, force: bool = False) -> None:
+    """Runs both nflverse syncs (advanced usage stats + snap counts) for one
+    season. Shared by sync-nflverse-data and the web app's daily background
+    sync so both stay in sync."""
+    client = NflverseClient()
+    try:
+        count = nflverse_sync_weekly_stats(conn, client, season, force=force)
+        click.echo(f"Advanced stats: synced {count} rows for {season}" if count else f"Advanced stats for {season}: cache fresh (<12h) — skipped.")
+    except NflverseFetchError as exc:
+        click.echo(f"Advanced stats: failed — couldn't reach nflverse: {exc}")
+    except NflverseParseError as exc:
+        click.echo(f"Advanced stats: failed — {exc}")
+
+    try:
+        count = sync_snap_counts(conn, client, season, force=force)
+        click.echo(f"Snap counts: synced {count} rows for {season}" if count else f"Snap counts for {season}: cache fresh (<12h) — skipped.")
+    except NflverseFetchError as exc:
+        click.echo(f"Snap counts: failed — couldn't reach nflverse: {exc}")
+    except NflverseParseError as exc:
+        click.echo(f"Snap counts: failed — {exc}")
+
+
+@cli.command("sync-nflverse-data")
+@click.option("--season", type=int, required=True, help="NFL season year, e.g. 2026.")
+@click.option("--force", is_flag=True, help="Bypass each source's 12h cache and refetch even if recently synced.")
+def sync_nflverse_data_cmd(season: int, force: bool):
+    """Sync both nflverse datasets in one call: advanced usage stats
+    (sync-advanced-stats) and snap counts (sync-snap-counts). Also runs
+    automatically once a day from inside the web app itself (see auto_sync.py)."""
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+    _sync_nflverse_data(conn, season, force=force)
+
+
 @cli.command("sync-advanced-stats")
 @click.option("--season", type=int, required=True, help="NFL season year, e.g. 2026.")
 @click.option("--force", is_flag=True, help="Bypass the 12h cache and refetch even if recently synced.")
