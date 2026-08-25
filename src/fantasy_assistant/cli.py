@@ -19,6 +19,7 @@ from .platforms.ffc.sync import sync_adp as ffc_sync_adp
 from .platforms.ktc.client import KTCClient, KTCFetchError, KTCParseError
 from .platforms.ktc.sync import sync_values as ktc_sync_values
 from .platforms.nflverse.client import NflverseClient, NflverseFetchError, NflverseParseError
+from .platforms.nflverse.snap_sync import get_player_snap_counts, sync_snap_counts
 from .platforms.nflverse.sync import get_player_advanced_stats, sync_weekly_stats as nflverse_sync_weekly_stats
 from .platforms.reddit.client import ApifyFetchError, ApifyNotConfigured
 from .platforms.reddit.sync import sync_reddit_sentiment, tracked_player_names
@@ -238,7 +239,8 @@ def sync_weekly_points_cmd(league_id: str, weeks: int):
 def sync_advanced_stats_cmd(season: int, force: bool):
     """Sync advanced weekly usage stats (target share, air yards share, WOPR, RACR)
     from nflverse's free public CSV (UNVERIFIED — see platforms/nflverse/client.py).
-    Snap counts and red-zone touches aren't covered yet — separate nflverse datasets."""
+    See also sync-snap-counts (a separate nflverse dataset). Red-zone touches
+    aren't covered — that needs full play-by-play data, not a simple CSV column."""
     conn = db_module.get_connection()
     db_module.init_db(conn)
     client = NflverseClient()
@@ -273,6 +275,48 @@ def advanced_stats_cmd(player_name: str, season: int):
             f"{(r['target_share'] if r['target_share'] is not None else ''):>6} "
             f"{(r['air_yards_share'] if r['air_yards_share'] is not None else ''):>7} "
             f"{(r['wopr'] if r['wopr'] is not None else ''):>6} {(r['racr'] if r['racr'] is not None else ''):>6}"
+        )
+
+
+@cli.command("sync-snap-counts")
+@click.option("--season", type=int, required=True, help="NFL season year, e.g. 2026.")
+@click.option("--force", is_flag=True, help="Bypass the 12h cache and refetch even if recently synced.")
+def sync_snap_counts_cmd(season: int, force: bool):
+    """Sync weekly offensive snap counts/percentage from nflverse's free public CSV
+    (UNVERIFIED — see platforms/nflverse/client.py). Separate dataset/table from
+    sync-advanced-stats, so run both to get the full usage picture."""
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+    client = NflverseClient()
+    try:
+        count = sync_snap_counts(conn, client, season, force=force)
+    except NflverseFetchError as exc:
+        raise click.ClickException(f"Couldn't reach nflverse: {exc}")
+    except NflverseParseError as exc:
+        raise click.ClickException(
+            f"{exc}\n\nThis was never tested against the live file — the URL/column-name "
+            "assumptions in platforms/nflverse/client.py need a real look. Paste this error back "
+            "and it can be fixed."
+        )
+    click.echo(f"Synced {count} player-week snap-count rows for {season}." if count else f"Snap counts for {season} cache fresh (<12h) — skipped. Use --force.")
+
+
+@cli.command("snap-counts")
+@click.argument("player_name")
+@click.option("--season", type=int, required=True, help="NFL season year, e.g. 2026.")
+def snap_counts_cmd(player_name: str, season: int):
+    """Show a player's synced weekly offensive snap counts for a season."""
+    conn = db_module.get_connection()
+    db_module.init_db(conn)
+    rows = get_player_snap_counts(conn, player_name, season)
+    if not rows:
+        click.echo(f"No snap counts synced for {player_name!r} in {season}. Run sync-snap-counts first.")
+        return
+    click.echo(f"{'Week':>4} {'Team':<5} {'Snaps':>6} {'Snap%':>6}")
+    for r in rows:
+        click.echo(
+            f"{r['week']:>4} {(r['team'] or ''):<5} {(r['offense_snaps'] if r['offense_snaps'] is not None else ''):>6} "
+            f"{(r['offense_pct'] if r['offense_pct'] is not None else ''):>6}"
         )
 
 
@@ -548,6 +592,8 @@ def buy_sell_cmd(league_id: str, limit: int):
             click.echo(f"  Market delta: {r['market_delta']:+}")
         if r["sentiment"] is not None:
             click.echo(f"  Reddit sentiment: {r['sentiment']:+}")
+        if r.get("usage_trend") is not None:
+            click.echo(f"  Usage trend (WOPR): {r['usage_trend']:+.2f}")
         for flag, reason in r["flags"]:
             click.echo(f"  [{flag.upper().replace('_', '-')}] {reason}")
 

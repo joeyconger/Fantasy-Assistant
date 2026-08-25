@@ -1,14 +1,15 @@
 """The core feature: combines on-field performance trend with market value
-movement (KTC for dynasty/devy, FantasyPros rank for redraft) and Reddit
-sentiment to flag divergences.
+movement (KTC for dynasty/devy, FantasyPros rank for redraft), Reddit
+sentiment, and usage trend (target share/WOPR, via nflverse) to flag
+divergences.
 
-- buy-low: performance trending up, but market/sentiment hasn't caught up yet
-- sell-high: market value or sentiment is high, but performance is declining
+- buy-low: performance/usage trending up, but market/sentiment hasn't caught up yet
+- sell-high: market value or sentiment is high, but performance/usage is declining
 
 This is a transparent, explainable heuristic (fixed thresholds, plain
 if/else), not a statistical model — every flag comes with the specific
 reason it fired, deliberately, so you can judge it rather than trust it
-blindly. All three inputs (KTC, FantasyPros, Reddit) are themselves
+blindly. All inputs (KTC, FantasyPros, Reddit, nflverse) are themselves
 unverified-against-live-site as noted in their own modules; this engine
 degrades gracefully when any of them has no data yet (it just uses whatever
 signals are actually populated).
@@ -24,6 +25,7 @@ from .roster_format import detect_qb_mode
 
 PERF_TREND_THRESHOLD = 2.0  # points/game swing to count as a meaningful trend
 SENTIMENT_THRESHOLD = 3  # net mention score to count as notably positive/negative
+USAGE_TREND_THRESHOLD = 0.05  # WOPR swing (0-1ish scale) to count as a meaningful usage shift
 
 
 def _market_value_delta_map(conn: sqlite3.Connection, format_: str, qb_mode: str) -> dict[tuple[str, str], int | None]:
@@ -77,12 +79,43 @@ def _sentiment_map(conn: sqlite3.Connection) -> dict[str, float]:
     return {row["normalized_name"]: row["net_score"] for row in rows}
 
 
+def _usage_trend_map(conn: sqlite3.Connection, season: int, recent_weeks: int = 3) -> dict[tuple[str, str], float]:
+    """WOPR trend (recent avg - season avg) per (normalized_name, position),
+    from nflverse's advanced_stats — same recent-vs-season-average pattern
+    performance_trend.compute_trends() uses for fantasy points, applied to
+    usage instead. WOPR (Weighted Opportunity Rating) is used rather than
+    target_share alone since it already folds in air-yards share — a
+    single composite "how much opportunity is this player getting" number.
+    Applies to every league format, not just dynasty/devy — usage trend is
+    an on-field signal like perf_trend, not a market-sourced one like KTC/
+    sentiment, so redraft leagues get it too."""
+    rows = conn.execute(
+        "SELECT normalized_name, position, week, wopr FROM advanced_stats "
+        "WHERE source = 'nflverse' AND season = ? AND wopr IS NOT NULL ORDER BY normalized_name, position, week",
+        (season,),
+    ).fetchall()
+
+    by_player: dict[tuple[str, str], list[tuple[int, float]]] = {}
+    for row in rows:
+        key = (row["normalized_name"], row["position"] or "")
+        by_player.setdefault(key, []).append((row["week"], row["wopr"]))
+
+    trends = {}
+    for key, weeks in by_player.items():
+        weeks.sort()
+        values = [w for _, w in weeks]
+        season_avg = sum(values) / len(values)
+        recent_avg = sum(values[-recent_weeks:]) / len(values[-recent_weeks:])
+        trends[key] = recent_avg - season_avg
+    return trends
+
+
 def find_buy_low_sell_high(
     conn: sqlite3.Connection, league_id: str, league_format: str, limit: int = 25, my_owner_id: str | None = None
 ) -> list[dict]:
     trends = compute_trends(conn, league_id)
 
-    league_row = conn.execute("SELECT platform, roster_positions FROM leagues WHERE league_id = ?", (league_id,)).fetchone()
+    league_row = conn.execute("SELECT platform, roster_positions, season FROM leagues WHERE league_id = ?", (league_id,)).fetchone()
     if not league_row:
         raise ValueError(f"League {league_id} hasn't been synced yet.")
     platform = league_row["platform"]
@@ -97,6 +130,16 @@ def find_buy_low_sell_high(
     # signal. Only attach it for dynasty/devy leagues, same split as KTC
     # values above, so it doesn't leak into BMFS/Lads' buy-sell flags.
     sentiment = _sentiment_map(conn) if market_format else {}
+
+    # Usage trend (WOPR) applies to every format — see _usage_trend_map's
+    # docstring for why this isn't gated behind market_format like
+    # sentiment/KTC are. league season is stored as TEXT; skip gracefully
+    # (empty map) if it's missing or not a real year, rather than raising.
+    try:
+        season = int(league_row["season"])
+    except (TypeError, ValueError):
+        season = None
+    usage_trends = _usage_trend_map(conn, season) if season else {}
 
     my_roster_id = None
     if my_owner_id:
@@ -128,6 +171,7 @@ def find_buy_low_sell_high(
         key = (norm, row["position"] or "")
         market_delta = value_deltas.get(key) if market_format else rank_deltas.get(key)
         net_sentiment = sentiment.get(norm)
+        usage_trend = usage_trends.get(key)
         perf_trend = trend["trend"]
 
         flags = []
@@ -140,6 +184,11 @@ def find_buy_low_sell_high(
                 flags.append(("sell_high", "Reddit sentiment high but usage/performance is declining"))
             if net_sentiment <= -SENTIMENT_THRESHOLD and perf_trend > PERF_TREND_THRESHOLD:
                 flags.append(("buy_low", "Performance trending up but Reddit sentiment still lags"))
+        if usage_trend is not None:
+            if usage_trend >= USAGE_TREND_THRESHOLD and (market_delta is None or market_delta <= 0):
+                flags.append(("buy_low", "Usage (target share/WOPR) trending up, market value hasn't caught up yet"))
+            if usage_trend <= -USAGE_TREND_THRESHOLD and market_delta is not None and market_delta > 0:
+                flags.append(("sell_high", "Usage (target share/WOPR) declining while market value is still up"))
 
         if not flags:
             continue
@@ -155,6 +204,7 @@ def find_buy_low_sell_high(
                 "perf_trend": perf_trend,
                 "market_delta": market_delta,
                 "sentiment": net_sentiment,
+                "usage_trend": usage_trend,
                 "flags": flags,
                 "qb_mode": qb_mode if market_format else None,
                 "owned_by_me": (row["roster_id"] == my_roster_id) if my_roster_id is not None else None,

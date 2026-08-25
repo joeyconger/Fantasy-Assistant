@@ -326,6 +326,88 @@ def test_no_flags_when_performance_and_market_agree(conn):
     assert results == []
 
 
+def _add_wopr_weeks(conn, name, position, weeks_wopr, season=2026):
+    for week, wopr in weeks_wopr:
+        conn.execute(
+            "INSERT INTO advanced_stats (source, season, week, normalized_name, full_name, position, wopr, fetched_at) "
+            "VALUES ('nflverse', ?, ?, ?, ?, ?, ?, ?)",
+            (season, week, name.lower(), name, position, wopr, NOW),
+        )
+
+
+def test_usage_trend_buy_low_flagged_when_wopr_rising_and_market_flat(conn):
+    from fantasy_assistant.analysis.buy_low_sell_high import find_buy_low_sell_high
+
+    _add_league(conn, format_="dynasty")
+    _add_player(conn, "p1", "sleeper", "rising usage guy", "WR")
+    conn.execute("INSERT INTO roster_players (league_id, roster_id, player_id) VALUES ('L1', '1', 'p1')")
+    for week, pts in [(1, 10.0), (2, 10.0), (3, 10.0)]:
+        conn.execute(
+            "INSERT INTO player_weekly_points (league_id, player_id, week, points, fetched_at) VALUES ('L1', 'p1', ?, ?, ?)",
+            (week, pts, NOW),
+        )
+    _add_wopr_weeks(conn, "rising usage guy", "WR", [(1, 0.1), (2, 0.1), (3, 0.5), (4, 0.5), (5, 0.5)])
+    conn.commit()
+
+    results = find_buy_low_sell_high(conn, "L1", "dynasty")
+    assert len(results) == 1
+    flags = [f for f, _ in results[0]["flags"]]
+    assert "buy_low" in flags
+    assert results[0]["usage_trend"] > 0
+
+
+def test_usage_trend_sell_high_flagged_when_wopr_falling_and_market_up(conn):
+    from fantasy_assistant.analysis.buy_low_sell_high import find_buy_low_sell_high
+
+    _add_league(conn, format_="dynasty")
+    _add_player(conn, "p1", "sleeper", "falling usage guy", "WR")
+    conn.execute("INSERT INTO roster_players (league_id, roster_id, player_id) VALUES ('L1', '1', 'p1')")
+    for week, pts in [(1, 10.0), (2, 10.0), (3, 10.0)]:
+        conn.execute(
+            "INSERT INTO player_weekly_points (league_id, player_id, week, points, fetched_at) VALUES ('L1', 'p1', ?, ?, ?)",
+            (week, pts, NOW),
+        )
+    _add_wopr_weeks(conn, "falling usage guy", "WR", [(1, 0.5), (2, 0.5), (3, 0.1), (4, 0.1), (5, 0.1)])
+    conn.execute(
+        "INSERT INTO market_values (source, format, normalized_name, full_name, position, value, fetched_at) VALUES ('ktc','dynasty','falling usage guy','Falling Usage Guy','WR',6000,?)",
+        (NOW,),
+    )
+    conn.execute(
+        "INSERT INTO market_values_prior (source, format, normalized_name, position, value, fetched_at) VALUES ('ktc','dynasty','falling usage guy','WR',4000,?)",
+        (NOW,),
+    )
+    conn.commit()
+
+    results = find_buy_low_sell_high(conn, "L1", "dynasty")
+    assert len(results) == 1
+    flags = [f for f, _ in results[0]["flags"]]
+    assert "sell_high" in flags
+    assert results[0]["usage_trend"] < 0
+
+
+def test_usage_trend_applies_to_redraft_leagues_too(conn):
+    """Unlike sentiment/KTC (dynasty-community/dynasty-market signals),
+    usage trend is an on-field signal and should fire for redraft leagues
+    too."""
+    from fantasy_assistant.analysis.buy_low_sell_high import find_buy_low_sell_high
+
+    _add_league(conn, format_="redraft")
+    _add_player(conn, "p1", "sleeper", "redraft riser", "WR")
+    conn.execute("INSERT INTO roster_players (league_id, roster_id, player_id) VALUES ('L1', '1', 'p1')")
+    for week, pts in [(1, 10.0), (2, 10.0), (3, 10.0)]:
+        conn.execute(
+            "INSERT INTO player_weekly_points (league_id, player_id, week, points, fetched_at) VALUES ('L1', 'p1', ?, ?, ?)",
+            (week, pts, NOW),
+        )
+    _add_wopr_weeks(conn, "redraft riser", "WR", [(1, 0.1), (2, 0.1), (3, 0.5), (4, 0.5), (5, 0.5)])
+    conn.commit()
+
+    results = find_buy_low_sell_high(conn, "L1", "redraft")
+    assert len(results) == 1
+    flags = [f for f, _ in results[0]["flags"]]
+    assert "buy_low" in flags
+
+
 def test_sentiment_only_applied_for_dynasty_devy_not_redraft(conn):
     """Reddit sentiment is sourced from r/DynastyFF (+ r/fantasyfootball's
     Player Discussion flair) — dynasty-community chatter. It should only

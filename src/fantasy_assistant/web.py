@@ -467,7 +467,8 @@ def buy_sell_page(league_id: str, _user: str = Depends(require_auth)):
               <p class="tag">{html.escape(r['team'] or '')}{ownership}</p>
               <p>Recent avg: {r['recent_avg']} · Season avg: {r['season_avg']} · Trend: {r['perf_trend']:+}
               {f" · Market delta: {r['market_delta']:+}" if r['market_delta'] is not None else ""}
-              {f" · Sentiment: {r['sentiment']:+}" if r['sentiment'] is not None else ""}</p>
+              {f" · Sentiment: {r['sentiment']:+}" if r['sentiment'] is not None else ""}
+              {f" · Usage trend (WOPR): {r['usage_trend']:+.2f}" if r.get('usage_trend') is not None else ""}</p>
               {flag_html}
             </div>
             """)

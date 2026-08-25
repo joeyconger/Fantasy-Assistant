@@ -241,6 +241,34 @@ CREATE TABLE IF NOT EXISTS advanced_stats_cache_meta (
     PRIMARY KEY (source, season)
 );
 
+-- Weekly offensive snap counts/percentage, from a *separate* nflverse
+-- dataset (scraped from Pro-Football-Reference) than advanced_stats above
+-- — kept in its own table rather than merged into advanced_stats so each
+-- sync's full-season DELETE-then-reinsert can't clobber the other's data
+-- for the same season. Same normalized_name+position+season+week key.
+-- Defensive/special-teams snaps aren't tracked — not fantasy-relevant for
+-- the skill positions this app cares about.
+CREATE TABLE IF NOT EXISTS snap_counts (
+    source TEXT NOT NULL,            -- 'nflverse'
+    season INTEGER NOT NULL,
+    week INTEGER NOT NULL,
+    normalized_name TEXT NOT NULL,
+    full_name TEXT,
+    position TEXT,
+    team TEXT,
+    offense_snaps INTEGER,
+    offense_pct REAL,                -- 0-1, share of the team's offensive snaps this player played
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (source, season, week, normalized_name, position)
+);
+
+CREATE TABLE IF NOT EXISTS snap_counts_cache_meta (
+    source TEXT NOT NULL,
+    season INTEGER NOT NULL,
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (source, season)
+);
+
 -- Basic mention/sentiment counts from Reddit (see analysis/sentiment.py for
 -- the scoring method — lexicon-based, not NLP).
 CREATE TABLE IF NOT EXISTS player_sentiment (
