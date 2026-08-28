@@ -35,8 +35,6 @@ export interface RatingParams {
   seasonCarryover: number;
   /** Points of predicted-margin uncertainty at zero games played; shrinks as sqrt(games played) grows. */
   baseErrorPoints: number;
-  /** "Games worth of trust" the market line gets before the model's own signal outweighs it (see predict.ts). */
-  marketShrinkageK: number;
   /** Weight (0-1) given to the prior season's CFBD SP+ rating vs. this model's own carryover, when seeding a new season's initial rating. CFB-only — SP+ doesn't exist for NFL. */
   spPriorWeight: number;
   /** Points of predicted-margin adjustment per unit z-score gap in CFBD's weekly Elo (see ratings/elo.ts's predictSpread). CFB-only — 0 for NFL, which CFBD doesn't cover. */
@@ -83,8 +81,6 @@ export interface RatingParams {
    * has not itself been swept. Only takes effect when successRateWeight > 0.
    */
   pointsPerSuccessRate: number;
-  /** Widens `confidence` as |marketSpreadHome| grows — a big market spread is a signal the prediction is less trustworthy (see ratings/elo.ts's predictSpread), for a confidence-based filter to screen out, NOT a lever on modelWeight (a modelWeight-only version was tried and proven to be a no-op, see predictSpread's doc). Smaller = widens confidence faster at a given spread size. */
-  bigSpreadShrinkRef: number;
 }
 
 const NFL_PARAMS: RatingParams = {
@@ -97,20 +93,17 @@ const NFL_PARAMS: RatingParams = {
   maxSosMultiplier: 1.8,
   seasonCarryover: 0.6,
   baseErrorPoints: 8,
-  marketShrinkageK: 8,
   spPriorWeight: 0, // no SP+ for NFL
   eloSignalPoints: 0, // no CFBD Elo for NFL
   spSignalPoints: 0, // no CFBD SP+ for NFL
   successRateWeight: 0, // untested — see RatingParams doc; 0 = today's pure-EPA behavior
   pointsPerSuccessRate: 90, // untested placeholder — see RatingParams doc
-  bigSpreadShrinkRef: 40, // widens confidence at NFL's typical spread range (rarely exceeds ~20) — untested for NFL, conservative default until swept
 };
 
 const CFB_PARAMS: RatingParams = {
   ...NFL_PARAMS,
   homeFieldAdvantage: 2.5,
   sosWeight: 0.4, // stronger SOS adjustment for CFB than NFL, per spec
-  marketShrinkageK: 6, // shallower CFB schedules (12 games) mean less time to prove the model out
   // pointsPerEpa/spPriorWeight/eloSignalPoints below: calibrated from the
   // cfb-external-sweep run (see README "External ratings" / backtest run
   // 101-125) — spPriorWeight and eloSignalPoints were NOT independent
@@ -124,17 +117,14 @@ const CFB_PARAMS: RatingParams = {
   spSignalPoints: 0, // NOT swept yet — a distinct hypothesis from spPriorWeight above (see RatingParams doc); worth sweeping given eloSignalPoints' additive treatment worked where spPriorWeight's carryover-blend treatment of a similar external rating didn't
   successRateWeight: 0, // NOT swept yet — see RatingParams doc
   pointsPerSuccessRate: 90, // NOT swept yet — untested placeholder, only matters once successRateWeight > 0
-  // Uncalibrated starting point — widens confidence for predictions
-  // fighting an extreme market spread, since backtest data showed those
-  // losing more often than not (real CFB mismatches routinely hit 30-50+
-  // points, more extreme than this rating system's compressed scale can
-  // match — see README "Big-spread deviation"). A modelWeight-based
-  // version of this same idea was tried first and proven mathematically
-  // incapable of changing cover rate/CLV (see predictSpread's doc) — this
-  // confidence-based version needs its own real sweep against
-  // getConfidenceReport before trusting this specific value.
-  bigSpreadShrinkRef: 25,
 };
+// NOTE: pointsPerEpa/spPriorWeight/eloSignalPoints above were calibrated
+// (and marketShrinkageK/bigSpreadShrinkRef existed at all) while
+// predictSpread still blended toward the market line — see git history /
+// the "remove market anchor" plan for why that blend was removed. The
+// 49.9% cover-rate figure cited above is from the ANCHORED model; it does
+// not describe today's unanchored predictSpread and needs a fresh sweep
+// before being trusted again.
 
 export function getRatingParams(sport: Sport): RatingParams {
   return sport === "cfb" ? CFB_PARAMS : NFL_PARAMS;

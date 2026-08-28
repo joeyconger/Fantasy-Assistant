@@ -10,7 +10,6 @@ import {
   runSweep,
   runExternalRatingsSweep,
   runSosSweep,
-  runBigSpreadShrinkSweep,
   runSpSignalSweep,
   runSuccessRateSweep,
 } from "./backtest/sweep.js";
@@ -392,25 +391,9 @@ export function startCfbSuccessRateSweepJob(): Promise<JobStatus> {
   });
 }
 
-/**
- * Sweeps bigSpreadShrinkRef (see backtest/sweep.ts's runBigSpreadShrinkSweep
- * and ratings/elo.ts's predictSpread doc) — the "defer to market more on
- * extreme spreads" fix added after backtest data showed the model
- * systematically under-predicting real blowouts. ref=1000 in the grid is
- * effectively the pre-fix, no-damping baseline for direct comparison.
- */
-export function startCfbBigSpreadShrinkSweepJob(): Promise<JobStatus> {
-  return runJob("cfb-bigspread-sweep", async (job) => {
-    log(job, "sweeping cfb bigSpreadShrinkRef, 2023-2025 (reports cover rate BY CONFIDENCE CEILING, not overall — see runBigSpreadShrinkSweep's doc for why)");
-    const results = await runBigSpreadShrinkSweep("cfb", 2023, 2025);
-    for (const r of results) {
-      const parts = r.coverRateByConfidenceCeiling
-        .map((c) => `conf<=${c.maxConfidence}: ${c.games}g ${fmtPct(c.coverRate)}`)
-        .join(", ");
-      log(job, `bigSpreadShrinkRef=${r.bigSpreadShrinkRef} (run ${r.runId}): ${parts}`);
-    }
-  });
-}
+// startCfbBigSpreadShrinkSweepJob removed along with the market anchor it
+// tuned — see ratings/elo.ts's predictSpread doc and the "remove market
+// anchor" plan. bigSpreadShrinkRef no longer exists on RatingParams.
 
 /**
  * Re-runs the CFB baseline excluding week 14+ (rivalry week / conference
@@ -506,7 +489,6 @@ export const JOB_STARTERS: Record<string, () => Promise<JobStatus>> = {
   "cfb-walkforward-no-rivalry": startCfbWalkforwardNoRivalryJob,
   "cfb-segments": startCfbSegmentsJob,
   "cfb-sos-sweep": startCfbSosSweepJob,
-  "cfb-bigspread-sweep": startCfbBigSpreadShrinkSweepJob,
   "cfb-spsignal-sweep": startCfbSpSignalSweepJob,
   "cfb-successrate-sweep": startCfbSuccessRateSweepJob,
   "cfb-no-rivalry-week": startCfbNoRivalryWeekJob,

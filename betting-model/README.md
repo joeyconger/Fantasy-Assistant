@@ -16,7 +16,7 @@ built to measure against the closing line, not the final score.
 | 1. Data layer — injuries | ⚠️ Built against ESPN's unofficial endpoint, **UNVERIFIED** — see "Injuries" below |
 | 1. Data layer — weather | ⚠️ Live forecast built for NFL (Open-Meteo). Historical backfill added for both sports (CFB via CFBD's own `venue_id`, correctly handles neutral-site games), **UNVERIFIED**, not yet run — see "New scaffolds" below |
 | 1. Data layer — public/sharp betting splits | 🚫 Schema-only — no verified free data source found (see "New scaffolds" below) |
-| 2. Rating model | ✅ Built (EPA-driven Elo, market-anchored) — math sanity-checked. Fixed a real bug (unbounded SOS multiplier causing rating blowups, see "A real bug" below) |
+| 2. Rating model | ✅ Built (EPA-driven Elo). Market anchoring **removed** (predictSpread now reports the model's own rating differential only, unblended toward the market line) — the anchor meant reported cover/CLV numbers were partly a restatement of the line they were scored against, so no result computed under it could be cleanly read as forecast skill; see "Market anchor removed" below. Every backtest number elsewhere in this README predates that change. Fixed a real bug (unbounded SOS multiplier causing rating blowups, see "A real bug" below) |
 | 2. Rating model — external ratings (CFB) | ⚠️ Built and calibrated via sweep (spPriorWeight=0, eloSignalPoints=1.5 — SP+ prior hurt, weekly Elo signal helped), ingested data still **UNVERIFIED** against a real response — see "External ratings" below |
 | 2. Rating model — SP+ signal + success-rate blend | 🆕 Built (`spSignalPoints`, `successRateWeight`/`pointsPerSuccessRate`), unit- and integration-tested, both default to 0 (no-op) — **NOT yet swept against real data**, see "SP+ signal" / "Success rate blend" below |
 | 3. Backtest harness | ✅ **Run for real** against 2023-2025, both sports, plus walk-forward validation and segment breakdowns. Three real bugs found and fixed (numeric-string coercion; unbounded SOS multiplier; computeInitialRating ignoring its own weight). **No cover-rate edge survived out-of-sample testing** — see "Backtest results" below. Avg CLV stayed positive in the true holdout; segment breakdowns are the current search for a narrower edge |
@@ -277,14 +277,18 @@ asked for explicitly.
   (0.4) is set noticeably higher than NFL's (0.15), since CFB schedules
   vary far more in difficulty than NFL's (division/conference-balanced)
   schedules do.
-- **Anchored to market, not built from zero**: `predictSpread()` in
-  `src/ratings/elo.ts` blends the model's own rating-implied spread with
-  the current market line, weighted by how many games have been observed
-  (`marketShrinkageK`) — at 0 games played the output *is* the market line
-  (weight 0), and the model's own signal only earns more say as evidence
-  accumulates. This is what "deviation from market, not an independent
-  power ranking" means concretely: early and in small samples, the model
-  can't out-argue the market yet.
+- **Not anchored to market**: `predictSpread()` in `src/ratings/elo.ts`
+  reports the model's own rating-implied spread outright, with no blend
+  toward the current market line. This used to anchor toward market by a
+  games-played shrinkage weight (`marketShrinkageK`) — removed because
+  every cover-rate/CLV number this repo produces is computed by comparing
+  the reported spread back against market lines, so scoring a partly-market
+  number against the market was not a clean measurement of forecast skill.
+  See "Market anchor removed" below for the full reasoning and what that
+  means for every backtest figure elsewhere in this README. The market
+  line is still fetched and stored alongside each prediction (for the
+  ratings-page deviation column and CLV scoring) — it's just no longer an
+  input to the prediction itself.
 - **Season carryover**: a team's rating at the start of a new season is
   its previous season's final rating regressed 40% toward league-average
   (`seasonCarryover = 0.6`) — enough memory to not restart blind, not so
@@ -298,9 +302,8 @@ no real backtest result yet to fit them against. `src/ratings/config.ts`
 says this explicitly; Phase 3 is where they actually get tuned (sweep each
 one, keep whatever beats the closing line). The core math was sanity-checked
 by hand (a team with consistently better EPA gains rating in the right
-direction; the market-shrinkage weight hits exactly 0 at zero games and 0.5
-at `marketShrinkageK` combined games played, as designed) — that's
-correctness, not validation that the *values* are good ones.
+direction) — that's correctness, not validation that the *values* are good
+ones.
 
 ```bash
 npm run ratings:compute -- --sport nfl --season 2025 --week 10   # writes team_ratings
@@ -700,6 +703,38 @@ holdout test, not a confirmed edge, before acting on it.
   open problem, not a resolved one, until a real fix is found or this gets
   properly walk-forward tested.
 
+### Market anchor removed
+
+Everything above this point (modelWeight, marketShrinkageK,
+bigSpreadShrinkRef, the two big-spread fix attempts) describes the
+market-anchored version of `predictSpread` and is kept as the historical
+record of what was tried and why. It no longer describes the code.
+
+The anchor blended the model's own rating differential toward the current
+market line by a games-played shrinkage factor, and widened `confidence`
+as the market line got more extreme. The problem: every cover-rate/CLV
+number this README reports was computed by comparing `modelSpreadHome` —
+the anchored, partly-market number — back against opening/closing market
+lines. That's not a clean measurement of forecast skill; some of the
+apparent edge could just be the anchor restating the market's own move.
+`predictSpread` now returns the model's pure rating differential
+(`homeRating - awayRating + homeFieldAdvantage + eloSignal + spSignal`,
+same signal terms as before) with no market blend at all —
+`RatingParams.marketShrinkageK` and `bigSpreadShrinkRef` are gone, and
+`runBigSpreadShrinkSweep`/`cfb-bigspread-sweep` were deleted since they
+swept a parameter that no longer exists. `getMarketLine`/`getOpeningLine`
+still run in `predictAndStoreWeek` and the market line is still stored per
+prediction — it's needed for the ratings-page deviation column and for CLV
+scoring — it's just no longer fed into `predictSpread` itself.
+
+Every cover-rate/CLV figure elsewhere in this README (49.9%, the
+walk-forward numbers, the big-spread sweep results, etc.) is from the
+anchored model and is not comparable to a backtest run against today's
+code. A fresh, honest 2023-2025 backtest under the unanchored model still
+needs to be run and reported — expect cover rate and CLV to look worse,
+especially in early-season weeks where the old blend leaned hardest on the
+market.
+
 ## New scaffolds: key numbers, weather, public/sharp splits
 
 Three new investigation angles, in different states of readiness:
@@ -785,7 +820,7 @@ src/
     odds/                       # current lines (Odds API) + SBR historical archive import (unfinished scaffold)
     injuries/                    # ESPN unofficial injuries (unverified)
     weather/                      # Open-Meteo, NFL stadiums
-  ratings/                # Phase 2 — EPA-driven Elo, market-anchored
+  ratings/                # Phase 2 — EPA-driven Elo, no market anchor
     config.ts              # tunable params per sport, flagged as uncalibrated defaults
     elo.ts                   # pure rating math (no DB) — computeSeasonRatings, predictSpread
     elo.test.ts                # node:test coverage for elo.ts (npm test)

@@ -42,36 +42,25 @@ test("computeInitialRating blends against league-average (0), not raw SP+, when 
   assert.ok(Math.abs(computeInitialRating(undefined, 20, params) - 0.4 * 20) < 1e-9);
 });
 
-test("predictSpread falls back to pure Elo with no market line", () => {
-  const result = predictSpread(
-    { homeRating: 3, awayRating: 1, homeGamesPlayed: 4, awayGamesPlayed: 4, marketSpreadHome: null },
-    NFL,
-  );
-  assert.equal(result.eloSpreadHome, -3.5);
+test("predictSpread returns the pure rating differential, unblended by any market line", () => {
+  const result = predictSpread({ homeRating: 3, awayRating: 1, homeGamesPlayed: 4, awayGamesPlayed: 4 }, NFL);
   assert.equal(result.modelSpreadHome, -3.5);
-  assert.equal(result.modelWeight, 1);
 });
 
-test("predictSpread blends toward the market by shrinkage and widens confidence with spread size", () => {
-  // combinedGames=8, modelWeight = 8/(8+8) = 0.5 -> 0.5*(-3.5) + 0.5*(-2) = -2.75
-  // baseConfidence = 8/sqrt(9) = 8/3; spreadUncertainty = 2/40 = 0.05 -> confidence = 8/3 * 1.05 = 2.8
-  const result = predictSpread(
-    { homeRating: 3, awayRating: 1, homeGamesPlayed: 4, awayGamesPlayed: 4, marketSpreadHome: -2 },
-    NFL,
-  );
-  assert.equal(result.modelWeight, 0.5);
-  assert.equal(result.modelSpreadHome, -2.75);
-  assert.ok(Math.abs(result.confidence - 2.8) < 1e-9);
+test("predictSpread's confidence shrinks as sqrt(games played) grows, independent of any market line", () => {
+  // baseErrorPoints=8, combinedGames=8 -> 8/sqrt(9) = 8/3
+  const result = predictSpread({ homeRating: 3, awayRating: 1, homeGamesPlayed: 4, awayGamesPlayed: 4 }, NFL);
+  assert.ok(Math.abs(result.confidence - 8 / 3) < 1e-9);
 });
 
 test("predictSpread's eloSignal term actually moves the prediction (CFB only -- NFL's eloSignalPoints is 0)", () => {
   const result = predictSpread(
-    { homeRating: 0, awayRating: 0, homeGamesPlayed: 0, awayGamesPlayed: 0, marketSpreadHome: null, homeEloZ: 1, awayEloZ: -1 },
+    { homeRating: 0, awayRating: 0, homeGamesPlayed: 0, awayGamesPlayed: 0, homeEloZ: 1, awayEloZ: -1 },
     CFB,
   );
   // eloSignal = eloSignalPoints * (1 - (-1)); predictedMargin = 0 - 0 + homeFieldAdvantage + eloSignal
   const expectedMargin = CFB.homeFieldAdvantage + CFB.eloSignalPoints * 2;
-  assert.ok(Math.abs(result.eloSpreadHome - -expectedMargin) < 1e-9);
+  assert.ok(Math.abs(result.modelSpreadHome - -expectedMargin) < 1e-9);
 });
 
 test("predictSpread's spSignal term actually moves the prediction when spSignalPoints > 0", () => {
@@ -80,23 +69,20 @@ test("predictSpread's spSignal term actually moves the prediction when spSignalP
   // that default ever changes, and so it actually proves the wiring works.
   const params = { ...CFB, spSignalPoints: 2 };
   const result = predictSpread(
-    { homeRating: 0, awayRating: 0, homeGamesPlayed: 0, awayGamesPlayed: 0, marketSpreadHome: null, homeSpZ: 1, awaySpZ: -1 },
+    { homeRating: 0, awayRating: 0, homeGamesPlayed: 0, awayGamesPlayed: 0, homeSpZ: 1, awaySpZ: -1 },
     params,
   );
   const expectedMargin = CFB.homeFieldAdvantage + 2 * 2;
-  assert.ok(Math.abs(result.eloSpreadHome - -expectedMargin) < 1e-9);
+  assert.ok(Math.abs(result.modelSpreadHome - -expectedMargin) < 1e-9);
 });
 
 test("predictSpread ignores spZ inputs entirely when spSignalPoints is 0 (today's default)", () => {
   const withSpZ = predictSpread(
-    { homeRating: 3, awayRating: 1, homeGamesPlayed: 4, awayGamesPlayed: 4, marketSpreadHome: null, homeSpZ: 5, awaySpZ: -5 },
+    { homeRating: 3, awayRating: 1, homeGamesPlayed: 4, awayGamesPlayed: 4, homeSpZ: 5, awaySpZ: -5 },
     CFB,
   );
-  const withoutSpZ = predictSpread(
-    { homeRating: 3, awayRating: 1, homeGamesPlayed: 4, awayGamesPlayed: 4, marketSpreadHome: null },
-    CFB,
-  );
-  assert.equal(withSpZ.eloSpreadHome, withoutSpZ.eloSpreadHome);
+  const withoutSpZ = predictSpread({ homeRating: 3, awayRating: 1, homeGamesPlayed: 4, awayGamesPlayed: 4 }, CFB);
+  assert.equal(withSpZ.modelSpreadHome, withoutSpZ.modelSpreadHome);
 });
 
 test("computeSeasonRatings updates both teams from a single game's EPA differential", () => {

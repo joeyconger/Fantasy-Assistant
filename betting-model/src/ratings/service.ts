@@ -118,7 +118,6 @@ async function predictAndStoreWeek(
         awayRating: away.rating,
         homeGamesPlayed: home.gamesPlayed,
         awayGamesPlayed: away.gamesPlayed,
-        marketSpreadHome,
         homeEloZ,
         awayEloZ,
         homeSpZ,
